@@ -49,3 +49,16 @@ def test_run_sets_proxy_env(tmp_path: Path):
     rc = main(["--home", str(home), "run", "--cwd", str(proj), "--no-proxy", "--",
                "bash", "-c", "echo x$ANTHROPIC_BASE_URL > url.txt"])
     assert rc == 0 and (proj / "url.txt").read_text().strip() == "x"
+
+
+def test_show_steps(tmp_path: Path, capsys):
+    home = tmp_path / "home"
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    main(["--home", str(home), "run", "--cwd", str(proj), "--no-proxy", "--",
+          "bash", "-c", "echo a > a.txt; sleep 0.3"])
+    (s,) = list_sessions(home)
+    capsys.readouterr()
+    assert main(["--home", str(home), "show", "--steps", s.id]) == 0
+    out = capsys.readouterr().out
+    assert "EXEC" in out and "create  a.txt" in out

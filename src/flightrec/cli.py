@@ -51,12 +51,32 @@ def cmd_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def _show_steps(s) -> None:
+    from .timeline import build_steps
+
+    for st in build_steps(s.events()):
+        tag = {"tool": "TOOL", "exec": "EXEC", "fs": "FS", "user": "USER",
+               "assistant": "AI", "session": "--"}[st.kind]
+        conf = "" if st.confidence == "n/a" else f" [{st.confidence}]"
+        dur = f" {st.duration}s" if st.duration is not None else ""
+        print(f"{st.index:>3} {_fmt_ts(st.ts)} {tag:<5} {st.title[:70]}{dur}{conf}"
+              f"  tok={st.cumulative_tokens}")
+        for f in st.fs:
+            print(f"{'':>18}  {f['op']:<7} {f['path']}")
+        for x in st.execs:
+            rc = "" if x.get("exit_code") is None else f" -> {x['exit_code']}"
+            print(f"{'':>18}  $ {x.get('command', '')[:70]}{rc}")
+
+
 def cmd_show(args: argparse.Namespace) -> int:
     try:
         s = open_session(args.session, Path(args.home))
     except FileNotFoundError as e:
         print(e, file=sys.stderr)
         return 1
+    if args.steps:
+        _show_steps(s)
+        return 0
     for e in s.events():
         if args.kind and e.kind not in args.kind:
             continue
@@ -115,6 +135,8 @@ def build_parser() -> argparse.ArgumentParser:
     show = sub.add_parser("show", help="print a session's events")
     show.add_argument("session")
     show.add_argument("--kind", action="append", help="only these event kinds")
+    show.add_argument("--steps", action="store_true",
+                      help="show correlated steps instead of raw events")
     show.set_defaults(fn=cmd_show)
     return ap
 
