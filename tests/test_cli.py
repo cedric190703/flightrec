@@ -62,3 +62,19 @@ def test_show_steps(tmp_path: Path, capsys):
     assert main(["--home", str(home), "show", "--steps", s.id]) == 0
     out = capsys.readouterr().out
     assert "EXEC" in out and "create  a.txt" in out
+
+
+def test_fork_command(tmp_path: Path):
+    home = tmp_path / "home"
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    main(["--home", str(home), "run", "--cwd", str(proj), "--no-proxy", "--",
+          "bash", "-c", "echo hello > a.txt; echo world > b.txt; sleep 0.3"])
+    (s,) = list_sessions(home)
+    dest = tmp_path / "fork"
+    rc = main(["--home", str(home), "fork", s.id, "--at", "999", "--dest", str(dest)])
+    assert rc == 0
+    assert (dest / "a.txt").read_text() == "hello\n"
+    assert (dest / "FORK.md").exists()
+    # refuses a non-empty dir without --force
+    assert main(["--home", str(home), "fork", s.id, "--at", "999", "--dest", str(dest)]) == 1

@@ -131,6 +131,24 @@ def cmd_view(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_fork(args: argparse.Namespace) -> int:
+    from .fork import fork
+
+    try:
+        s = open_session(args.session, Path(args.home))
+    except FileNotFoundError as e:
+        print(e, file=sys.stderr)
+        return 1
+    dest = Path(args.dest).resolve()
+    if dest.exists() and any(dest.iterdir()) and not args.force:
+        print(f"flightrec fork: {dest} is not empty (use --force)", file=sys.stderr)
+        return 1
+    info = fork(s, args.at, dest)
+    print(f"[flightrec] forked session {s.id} at step {args.at} -> {dest}", file=sys.stderr)
+    print(f"[flightrec] wrote {len(info['files'])} files + FORK.md", file=sys.stderr)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="flightrec",
                                  description="Flight recorder for AI coding agents.")
@@ -163,6 +181,13 @@ def build_parser() -> argparse.ArgumentParser:
     view.add_argument("--port", type=int, default=7357)
     view.add_argument("--no-browser", action="store_true")
     view.set_defaults(fn=cmd_view)
+
+    fk = sub.add_parser("fork", help="rebuild the working tree at a step into a new dir")
+    fk.add_argument("session")
+    fk.add_argument("--at", type=int, required=True, help="event seq to fork at")
+    fk.add_argument("--dest", required=True, help="destination directory")
+    fk.add_argument("--force", action="store_true", help="write into a non-empty directory")
+    fk.set_defaults(fn=cmd_fork)
     return ap
 
 
