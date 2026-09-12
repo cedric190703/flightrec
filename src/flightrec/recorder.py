@@ -10,13 +10,15 @@ from pathlib import Path
 
 from .events import Event, Kind, Source
 from .fswatch import FsWatcher
+from .proxy import LlmProxy
 from .shim import ExecCollector, ShimDir
 from .store import Session, create_session
 
 
 class Recorder:
     def __init__(self, command: list[str], cwd: Path, root: Path | None = None,
-                 ignores: list[str] | None = None, harness: str | None = None):
+                 ignores: list[str] | None = None, harness: str | None = None,
+                 proxy: bool = True):
         self.command = command
         self.cwd = cwd.resolve()
         self.session: Session = create_session(root) if root else create_session()
@@ -24,10 +26,13 @@ class Recorder:
         self._fs = FsWatcher(self.cwd, self.session, ignores)
         self._shim = ShimDir(self.session)
         self._exec = ExecCollector(self.session, self._shim.log_path)
+        self._proxy = LlmProxy(self.session) if proxy else None
         self._proc: subprocess.Popen | None = None
 
     def _env(self) -> dict[str, str]:
         env = self._shim.env()
+        if self._proxy:
+            env = self._proxy.env(env)
         env["FLIGHTREC_SESSION"] = self.session.id
         return env
 
@@ -36,6 +41,8 @@ class Recorder:
         self._shim.build()
         self._fs.start()
         self._exec.start()
+        if self._proxy:
+            self._proxy.start()
         rc: int | None = None
         try:
             self._proc = subprocess.Popen(self.command, cwd=self.cwd, env=self._env())
@@ -45,6 +52,8 @@ class Recorder:
                                       {"error": f"command not found: {self.command[0]}"}))
             rc = 127
         finally:
+            if self._proxy:
+                self._proxy.stop()
             self._exec.stop()
             self._fs.stop()
             self._shim.cleanup()

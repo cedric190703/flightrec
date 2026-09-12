@@ -33,3 +33,19 @@ def test_run_records_fs_and_exec(tmp_path: Path, capsys):
 def test_run_missing_command(tmp_path: Path):
     rc = main(["--home", str(tmp_path), "run", "--", "definitely-not-a-real-binary-xyz"])
     assert rc == 127
+
+
+def test_run_sets_proxy_env(tmp_path: Path):
+    home = tmp_path / "home"
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    rc = main(["--home", str(home), "run", "--cwd", str(proj), "--",
+               "bash", "-c", "echo $ANTHROPIC_BASE_URL > url.txt; echo $OPENAI_BASE_URL >> url.txt"])
+    assert rc == 0
+    urls = (proj / "url.txt").read_text().split()
+    assert urls[0].startswith("http://127.0.0.1:") and urls[0].endswith("/anthropic")
+    assert urls[1].endswith("/openai/v1")
+
+    rc = main(["--home", str(home), "run", "--cwd", str(proj), "--no-proxy", "--",
+               "bash", "-c", "echo x$ANTHROPIC_BASE_URL > url.txt"])
+    assert rc == 0 and (proj / "url.txt").read_text().strip() == "x"

@@ -28,7 +28,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         print("flightrec run: missing harness command after '--'", file=sys.stderr)
         return 2
     rec = Recorder(args.command, Path(args.cwd), root=Path(args.home),
-                   ignores=args.ignore, harness=args.harness)
+                   ignores=args.ignore, harness=args.harness, proxy=not args.no_proxy)
     print(f"[flightrec] recording session {rec.session.id} -> {rec.session.dir}", file=sys.stderr)
     rc = rec.run()
     n = len(rec.session)
@@ -69,6 +69,18 @@ def cmd_show(args: argparse.Namespace) -> int:
                     desc = f"  -> exit {p['exit_code']} in {p['duration']}s"
                 else:
                     desc = f"$ {p['command']}"
+            case Kind.LLM_REQUEST:
+                desc = f"-> {p.get('provider')} {p.get('model')} ({p.get('n_messages')} msgs)"
+            case Kind.LLM_RESPONSE:
+                u = p.get("usage") or {}
+                desc = (f"<- {p.get('stop_reason')} in={u.get('input')} out={u.get('output')} "
+                        f"{p.get('latency')}s  {str(p.get('text', ''))[:60]!r}")
+            case Kind.USER_MESSAGE:
+                desc = f"user: {p['text'][:80]!r}"
+            case Kind.TOOL_CALL:
+                desc = f"call {p['name']} {str(p.get('input'))[:80]}"
+            case Kind.TOOL_RESULT:
+                desc = f"result{' ERROR' if p.get('is_error') else ''}: {str(p.get('content'))[:70]!r}"
             case Kind.SESSION_START:
                 desc = f"start {' '.join(p['command'])} in {p['cwd']}"
             case Kind.SESSION_END:
@@ -91,6 +103,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--cwd", default=".", help="project directory to watch and run in")
     run.add_argument("--ignore", action="append", default=[], help="extra glob to ignore")
     run.add_argument("--harness", help="label for this harness (default: command name)")
+    run.add_argument("--no-proxy", action="store_true",
+                     help="do not intercept LLM API traffic (fs + exec only)")
     run.add_argument("command", nargs=argparse.REMAINDER,
                      help="harness command, after '--'")
     run.set_defaults(fn=cmd_run)
