@@ -28,6 +28,11 @@ from typing import Iterable
 
 from .events import Event, Kind
 
+# An fs/exec event this long after a tool_result still belongs to that call:
+# observers stamp events when they *see* a change, and delivery lags slightly
+# behind the harness reporting the tool as done.
+ATTRIBUTION_GRACE_S = 0.25
+
 
 @dataclass
 class Step:
@@ -145,7 +150,7 @@ def build_steps(events: Iterable[Event]) -> list[Step]:
             continue  # folded into its call above
         elif k == Kind.FS_CHANGE:
             d = _fs_dict(e)
-            if open_step is not None and (open_call_ts_end is None or e.ts <= open_call_ts_end + 0.05):
+            if open_step is not None and (open_call_ts_end is None or e.ts <= open_call_ts_end + ATTRIBUTION_GRACE_S):
                 open_step.fs.append(d)
                 open_step.event_ids.append(e.id)
                 if _mentions(open_step.call.get("input") if open_step.call else None, d["path"]):
@@ -157,7 +162,7 @@ def build_steps(events: Iterable[Event]) -> list[Step]:
                                   cumulative_tokens=total_tokens))
         elif k == Kind.EXEC:
             d = execs.get(e.id, {"id": e.id, "ts": e.ts, "command": e.payload.get("command")})
-            if open_step is not None and (open_call_ts_end is None or e.ts <= open_call_ts_end + 0.05):
+            if open_step is not None and (open_call_ts_end is None or e.ts <= open_call_ts_end + ATTRIBUTION_GRACE_S):
                 open_step.execs.append(d)
                 open_step.event_ids.append(e.id)
                 if _mentions(open_step.call.get("input") if open_step.call else None,

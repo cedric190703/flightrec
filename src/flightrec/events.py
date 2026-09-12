@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from enum import StrEnum
 from typing import Any
 
@@ -63,5 +63,14 @@ class Event:
     @classmethod
     def from_json(cls, line: str) -> "Event":
         d = json.loads(line)
-        d["snapshots"] = [Snapshot(**s) for s in d.get("snapshots", [])]
+        if not isinstance(d, dict):
+            raise ValueError(f"event line is not an object: {line[:80]!r}")
+        # Ignore keys we do not know so a newer writer's log still loads.
+        d = {k: v for k, v in d.items() if k in _EVENT_FIELDS}
+        d["snapshots"] = [Snapshot(**{k: s.get(k) for k in _SNAPSHOT_FIELDS})
+                          for s in d.get("snapshots") or [] if isinstance(s, dict)]
         return cls(**d)
+
+
+_EVENT_FIELDS = frozenset(f.name for f in fields(Event))
+_SNAPSHOT_FIELDS = tuple(f.name for f in fields(Snapshot))

@@ -51,6 +51,10 @@ class Recorder:
             self.session.append(Event(Kind.NOTE, Source.CLI,
                                       {"error": f"command not found: {self.command[0]}"}))
             rc = 127
+        except OSError as exc:  # not executable, bad interpreter, ...
+            self.session.append(Event(Kind.NOTE, Source.CLI,
+                                      {"error": f"cannot launch {self.command[0]}: {exc}"}))
+            rc = 126
         finally:
             if self._proxy:
                 self._proxy.stop()

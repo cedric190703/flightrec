@@ -41,6 +41,24 @@ def _clip(s: Any, n: int = 4000) -> Any:
     return s
 
 
+def _dicts(v: Any) -> list[dict]:
+    """The dict items of a wire-level list; anything else (str, None, int) is empty.
+
+    Bodies are untrusted: a gateway may return ``"content": "oops"`` where a
+    list is expected, and a parser must never raise on that.
+    """
+    if isinstance(v, list):
+        return [x for x in v if isinstance(x, dict)]
+    return []
+
+
+def _text_of(c: Any) -> str:
+    """Flatten a content value that is either a string or a list of text blocks."""
+    if isinstance(c, str):
+        return c
+    return "\n".join(str(x.get("text", "")) for x in _dicts(c))
+
+
 def detect_provider(path: str, headers: dict[str, str]) -> str:
     p = path.lower()
     if "/v1/messages" in p or "x-api-key" in {k.lower() for k in headers}:
@@ -170,36 +188,41 @@ def extract(provider: str, path: str, req_body: str, resp_body: str,
     }, ts=ts_req)
     events.append(request_ev)
 
-    if provider == "anthropic":
-        events += _anthropic(req, resp_body, streamed, dedup, request_ev, ts_req, ts_resp)
-    elif provider == "openai-chat":
-        events += _openai_chat(req, resp_body, streamed, dedup, request_ev, ts_req, ts_resp)
-    elif provider == "openai-responses":
-        events += _openai_responses(req, resp_body, streamed, dedup, request_ev, ts_req, ts_resp)
-    else:
-        events.append(Event(Kind.LLM_RESPONSE, Source.PROXY, {
-            "provider": provider, "status": status, "raw": _clip(resp_body, 2000),
+    parser = _PARSERS.get(provider)
+    try:
+        if parser is not None:
+            events += parser(req, resp_body, streamed, dedup, request_ev, ts_req, ts_resp)
+        else:
+            events.append(_raw_response(provider, status, resp_body, request_ev, ts_resp))
+    except Exception as exc:  # noqa: BLE001 - a bad body must not lose the request
+        events.append(_raw_response(provider, status, resp_body, request_ev, ts_resp))
+        events.append(Event(Kind.NOTE, Source.PROXY, {
+            "error": f"parse failure: {exc!r}", "provider": provider, "path": path,
         }, ts=ts_resp, links=[request_ev.id]))
     request_ev.payload["status"] = status
     return events
 
 
+def _raw_response(provider, status, resp_body, request_ev, ts_resp) -> Event:
+    return Event(Kind.LLM_RESPONSE, Source.PROXY, {
+        "provider": provider, "status": status, "raw": _clip(resp_body, 2000),
+    }, ts=ts_resp, links=[request_ev.id])
+
+
 def _anthropic(req, resp_body, streamed, dedup, request_ev, ts_req, ts_resp):
     events: list[Event] = []
-    msgs = req.get("messages", [])
+    msgs = _dicts(req.get("messages"))
     request_ev.payload["n_messages"] = len(msgs)
-    request_ev.payload["tools"] = [t.get("name") for t in req.get("tools", []) if isinstance(t, dict)]
+    request_ev.payload["tools"] = [t.get("name") for t in _dicts(req.get("tools"))]
 
     # Inputs: new user text and tool results carried in the history.
     for m in msgs:
         if m.get("role") != "user":
             continue
         content = m.get("content")
-        blocks = content if isinstance(content, list) else [{"type": "text", "text": content}]
+        blocks = _dicts(content) if isinstance(content, list) else [{"type": "text", "text": content}]
         for b in blocks:
-            if not isinstance(b, dict):
-                continue
-            if b.get("type") == "text" and b.get("text"):
+            if b.get("type") == "text" and isinstance(b.get("text"), str) and b["text"]:
                 key = _h(b["text"])
                 if dedup.first(dedup.seen_user, key):
                     events.append(Event(Kind.USER_MESSAGE, Source.PROXY,
@@ -207,9 +230,7 @@ def _anthropic(req, resp_body, streamed, dedup, request_ev, ts_req, ts_resp):
             elif b.get("type") == "tool_result":
                 tid = b.get("tool_use_id", "")
                 if dedup.first(dedup.seen_results, tid):
-                    c = b.get("content")
-                    if isinstance(c, list):
-                        c = "\n".join(x.get("text", "") for x in c if isinstance(x, dict))
+                    c = _text_of(b.get("content"))
                     events.append(Event(Kind.TOOL_RESULT, Source.PROXY, {
                         "tool_use_id": tid, "is_error": bool(b.get("is_error")),
                         "content": _clip(c),
@@ -220,9 +241,10 @@ def _anthropic(req, resp_body, streamed, dedup, request_ev, ts_req, ts_resp):
         msg = anthropic_sse_to_message(parse_sse(resp_body))
     else:
         msg = _json_or_none(resp_body) or {}
-    text = "".join(b.get("text", "") for b in msg.get("content", []) if b.get("type") == "text")
-    thinking = "".join(b.get("thinking", "") for b in msg.get("content", []) if b.get("type") == "thinking")
-    usage = msg.get("usage", {}) or {}
+    blocks = _dicts(msg.get("content"))
+    text = "".join(str(b.get("text", "")) for b in blocks if b.get("type") == "text")
+    thinking = "".join(str(b.get("thinking", "")) for b in blocks if b.get("type") == "thinking")
+    usage = msg.get("usage") if isinstance(msg.get("usage"), dict) else {}
     resp_ev = Event(Kind.LLM_RESPONSE, Source.PROXY, {
         "provider": "anthropic", "model": msg.get("model"), "stop_reason": msg.get("stop_reason"),
         "text": _clip(text), "thinking": _clip(thinking, 2000),
@@ -232,7 +254,7 @@ def _anthropic(req, resp_body, streamed, dedup, request_ev, ts_req, ts_resp):
         "latency": round(ts_resp - ts_req, 3),
     }, ts=ts_resp, links=[request_ev.id])
     events.append(resp_ev)
-    for b in msg.get("content", []):
+    for b in blocks:
         if b.get("type") == "tool_use" and dedup.first(dedup.seen_calls, b.get("id", "")):
             ev = Event(Kind.TOOL_CALL, Source.PROXY, {
                 "tool_use_id": b.get("id"), "name": b.get("name"), "input": b.get("input", {}),
@@ -244,16 +266,13 @@ def _anthropic(req, resp_body, streamed, dedup, request_ev, ts_req, ts_resp):
 
 def _openai_chat(req, resp_body, streamed, dedup, request_ev, ts_req, ts_resp):
     events: list[Event] = []
-    msgs = req.get("messages", [])
+    msgs = _dicts(req.get("messages"))
     request_ev.payload["n_messages"] = len(msgs)
-    request_ev.payload["tools"] = [t.get("function", {}).get("name") for t in req.get("tools", [])
-                                   if isinstance(t, dict)]
+    request_ev.payload["tools"] = [(t.get("function") or {}).get("name") for t in _dicts(req.get("tools"))]
     for m in msgs:
         role = m.get("role")
         if role == "user":
-            c = m.get("content")
-            if isinstance(c, list):
-                c = "\n".join(x.get("text", "") for x in c if isinstance(x, dict))
+            c = _text_of(m.get("content"))
             if c and dedup.first(dedup.seen_user, _h(c)):
                 events.append(Event(Kind.USER_MESSAGE, Source.PROXY, {"text": _clip(c)},
                                     ts=ts_req, links=[request_ev.id]))
@@ -270,13 +289,14 @@ def _openai_chat(req, resp_body, streamed, dedup, request_ev, ts_req, ts_resp):
         model, finish = msg["model"], msg["finish_reason"]
     else:
         body = _json_or_none(resp_body) or {}
-        choice = (body.get("choices") or [{}])[0]
-        m = choice.get("message", {})
-        text = m.get("content") or ""
-        calls = [{"id": tc.get("id"), "name": tc.get("function", {}).get("name"),
-                  "arguments": tc.get("function", {}).get("arguments", "")}
-                 for tc in m.get("tool_calls", []) or []]
-        usage, model, finish = body.get("usage", {}), body.get("model"), choice.get("finish_reason")
+        choice = (_dicts(body.get("choices")) or [{}])[0]
+        m = choice.get("message") if isinstance(choice.get("message"), dict) else {}
+        text = _text_of(m.get("content"))
+        calls = [{"id": tc.get("id"), "name": (tc.get("function") or {}).get("name"),
+                  "arguments": (tc.get("function") or {}).get("arguments", "")}
+                 for tc in _dicts(m.get("tool_calls"))]
+        usage, model, finish = body.get("usage"), body.get("model"), choice.get("finish_reason")
+    usage = usage if isinstance(usage, dict) else {}
     resp_ev = Event(Kind.LLM_RESPONSE, Source.PROXY, {
         "provider": "openai-chat", "model": model, "stop_reason": finish, "text": _clip(text),
         "usage": {"input": usage.get("prompt_tokens"), "output": usage.get("completion_tokens")},
@@ -298,17 +318,12 @@ def _openai_chat(req, resp_body, streamed, dedup, request_ev, ts_req, ts_resp):
 def _openai_responses(req, resp_body, streamed, dedup, request_ev, ts_req, ts_resp):
     events: list[Event] = []
     inp = req.get("input", [])
-    if isinstance(inp, str):
-        inp = [{"role": "user", "content": inp}]
+    inp = [{"role": "user", "content": inp}] if isinstance(inp, str) else _dicts(inp)
     request_ev.payload["n_messages"] = len(inp)
-    request_ev.payload["tools"] = [t.get("name") for t in req.get("tools", []) if isinstance(t, dict)]
+    request_ev.payload["tools"] = [t.get("name") for t in _dicts(req.get("tools"))]
     for item in inp:
-        if not isinstance(item, dict):
-            continue
         if item.get("role") == "user":
-            c = item.get("content")
-            if isinstance(c, list):
-                c = "\n".join(x.get("text", "") for x in c if isinstance(x, dict))
+            c = _text_of(item.get("content"))
             if c and dedup.first(dedup.seen_user, _h(c)):
                 events.append(Event(Kind.USER_MESSAGE, Source.PROXY, {"text": _clip(c)},
                                     ts=ts_req, links=[request_ev.id]))
@@ -323,12 +338,12 @@ def _openai_responses(req, resp_body, streamed, dedup, request_ev, ts_req, ts_re
         else (_json_or_none(resp_body) or {})
     text = ""
     calls = []
-    for item in body.get("output", []) or []:
+    for item in _dicts(body.get("output")):
         if item.get("type") == "message":
-            text += "".join(c.get("text", "") for c in item.get("content", []) if isinstance(c, dict))
+            text += "".join(str(c.get("text", "")) for c in _dicts(item.get("content")))
         elif item.get("type") == "function_call":
             calls.append(item)
-    usage = body.get("usage", {}) or {}
+    usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
     resp_ev = Event(Kind.LLM_RESPONSE, Source.PROXY, {
         "provider": "openai-responses", "model": body.get("model"), "stop_reason": body.get("status"),
         "text": _clip(text),
@@ -347,3 +362,10 @@ def _openai_responses(req, resp_body, streamed, dedup, request_ev, ts_req, ts_re
             ev.id = cid or ev.id
             events.append(ev)
     return events
+
+
+_PARSERS = {
+    "anthropic": _anthropic,
+    "openai-chat": _openai_chat,
+    "openai-responses": _openai_responses,
+}

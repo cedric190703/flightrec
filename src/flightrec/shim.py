@@ -16,11 +16,13 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import stat
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 from .events import Event, Kind, Source
@@ -38,7 +40,7 @@ TOOLS = [
 
 _TEMPLATE = """#!/bin/sh
 # flightrec shim for {name}
-_real='{real}'
+_real={real}
 if [ -z "$FLIGHTREC_EXEC_LOG" ] || [ -n "$FLIGHTREC_IN_SHIM" ]; then
   exec "$_real" "$@"
 fi
@@ -74,7 +76,7 @@ class ShimDir:
             if not real:
                 continue
             script = self.dir / name
-            script.write_text(_TEMPLATE.format(name=name, real=real))
+            script.write_text(_TEMPLATE.format(name=name, real=shlex.quote(real)))
             script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
             self.shimmed[name] = real
 
@@ -116,24 +118,29 @@ class ExecCollector:
     def drain(self) -> None:
         if not self.log_path.exists():
             return
-        with self.log_path.open("r", encoding="utf-8") as f:
+        # Binary mode: seeking a text stream to a byte offset is undefined.
+        with self.log_path.open("rb") as f:
             f.seek(self._pos)
             for line in f:
-                if not line.endswith("\n"):
+                if not line.endswith(b"\n"):
                     break  # partial write, retry next tick
-                self._pos += len(line.encode("utf-8"))
+                self._pos += len(line)
                 try:
-                    self._handle(json.loads(line))
+                    rec = json.loads(line.decode("utf-8", "replace"))
                 except json.JSONDecodeError:
                     continue
+                if isinstance(rec, dict):
+                    self._handle(rec)
 
     def _handle(self, rec: dict) -> None:
         if rec.get("phase") == "start":
+            argv = [str(a) for a in rec.get("argv") or []]
+            real = str(rec.get("real") or "")
             ev = Event(Kind.EXEC, Source.SHIM, {
-                "argv": rec["argv"], "real": rec["real"], "cwd": rec["cwd"],
-                "command": " ".join([os.path.basename(rec["real"]), *rec["argv"]]),
+                "argv": argv, "real": real, "cwd": rec.get("cwd"),
+                "command": " ".join([os.path.basename(real), *argv]),
                 "exit_code": None, "duration": None,
-            }, ts=rec["ts"])
+            }, ts=rec.get("ts") or time.time())
             self._open[rec["id"]] = ev
             self.session.append(ev)
         elif rec.get("phase") == "end":
@@ -141,7 +148,8 @@ class ExecCollector:
             if ev is None:
                 return
             # Emit completion as a separate linked event; the log is append-only.
+            ts = rec.get("ts") or time.time()
             self.session.append(Event(Kind.EXEC, Source.SHIM, {
                 "phase": "end", "exit_code": rec.get("exit_code"),
-                "duration": round(rec["ts"] - ev.ts, 3), "command": ev.payload["command"],
-            }, ts=rec["ts"], links=[ev.id]))
+                "duration": round(ts - ev.ts, 3), "command": ev.payload["command"],
+            }, ts=ts, links=[ev.id]))

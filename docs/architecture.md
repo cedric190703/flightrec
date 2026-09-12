@@ -50,8 +50,11 @@ The observers are independent, so `build_steps()` stitches their events into
 a human-readable list of *steps*: it opens a step at each `tool_call` and
 attributes the `fs_change` / `exec` events that occur before the matching
 `tool_result` to it, scoring each attribution as **strong** (the call input
-mentions the path/command) or **timing** (co-occurrence only). Recordings
-made without the proxy fall back to one step per top-level command.
+mentions the path/command) or **timing** (co-occurrence only). Observers
+stamp events with the time a change was *first seen* (not when the fs
+debounce fired), and a change landing up to `ATTRIBUTION_GRACE_S` after
+the `tool_result` is still credited to that call. Recordings made without
+the proxy fall back to one step per top-level command.
 
 ## Storage (`store.py`)
 

@@ -68,7 +68,8 @@ class FsWatcher:
         self.session = session
         self.ignores = DEFAULT_IGNORES + (ignores or [])
         self._index: dict[str, str | None] = {}     # rel path -> last known sha
-        self._pending: dict[str, float] = {}        # rel path -> deadline
+        # rel path -> (debounce deadline, wall-clock time the change was first seen)
+        self._pending: dict[str, tuple[float, float]] = {}
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._observer = Observer()
@@ -122,7 +123,8 @@ class FsWatcher:
         if rel is None:
             return
         with self._lock:
-            self._pending[rel] = time.monotonic() + DEBOUNCE_S
+            first_seen = self._pending[rel][1] if rel in self._pending else time.time()
+            self._pending[rel] = (time.monotonic() + DEBOUNCE_S, first_seen)
 
     def _flush_loop(self) -> None:
         while not self._stop.wait(0.05):
@@ -131,13 +133,20 @@ class FsWatcher:
     def _flush(self, force: bool = False) -> None:
         now = time.monotonic()
         with self._lock:
-            due = [r for r, t in self._pending.items() if force or t <= now]
-            for r in due:
+            due = [(r, seen) for r, (deadline, seen) in self._pending.items()
+                   if force or deadline <= now]
+            for r, _ in due:
                 del self._pending[r]
-        for rel in due:
-            self._emit(rel)
+        for rel, seen in due:
+            self._emit(rel, seen)
 
-    def _emit(self, rel: str) -> None:
+    def _emit(self, rel: str, ts: float | None = None) -> None:
+        """Record the current state of ``rel`` if it differs from the last known one.
+
+        ``ts`` is when the change was first observed, not when the debounce
+        fired: the correlator matches fs events against tool_call/tool_result
+        timestamps, so a 150 ms debounce delay must not leak into the log.
+        """
         path = self.root / rel
         before = self._index.get(rel)
         exists = path.is_file()
@@ -150,5 +159,6 @@ class FsWatcher:
         self.session.append(Event(
             Kind.FS_CHANGE, Source.FS,
             {"path": rel, "op": op, "size": size},
+            ts=ts if ts is not None else time.time(),
             snapshots=[Snapshot(rel, before, after)],
         ))

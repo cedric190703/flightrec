@@ -21,9 +21,15 @@ from .timeline import build_steps, files_at
 def _original_tree(session: Session) -> dict[str, str]:
     """Best-effort original content: the 'before' of the first time we saw each path."""
     origin: dict[str, str] = {}
+    seen: set[str] = set()
     for e in sorted(session.events(), key=lambda e: e.seq or 0):
         for s in e.snapshots:
-            if s.path not in origin and s.before is not None:
+            if s.path in seen:
+                continue
+            seen.add(s.path)
+            # A first sighting with no "before" is a file the session created;
+            # it must not be treated as part of the original tree.
+            if s.before is not None:
                 origin[s.path] = s.before
     return origin
 

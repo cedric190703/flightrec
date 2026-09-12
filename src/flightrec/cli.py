@@ -21,11 +21,19 @@ def _fmt_ts(ts: float) -> str:
     return time.strftime("%H:%M:%S", time.localtime(ts)) + f".{int((ts % 1) * 1000):03d}"
 
 
+def _one_line(text: str, width: int) -> str:
+    """Collapse whitespace so a multi-line message stays on one table row."""
+    return " ".join(text.split())[:width]
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     from .recorder import Recorder
 
     if not args.command:
         print("flightrec run: missing harness command after '--'", file=sys.stderr)
+        return 2
+    if not Path(args.cwd).is_dir():
+        print(f"flightrec run: --cwd {args.cwd!r} is not a directory", file=sys.stderr)
         return 2
     rec = Recorder(args.command, Path(args.cwd), root=Path(args.home),
                    ignores=args.ignore, harness=args.harness, proxy=not args.no_proxy)
@@ -60,13 +68,13 @@ def _show_steps(s) -> None:
                "assistant": "AI", "session": "--"}[st.kind]
         conf = "" if st.confidence == "n/a" else f" [{st.confidence}]"
         dur = f" {st.duration}s" if st.duration is not None else ""
-        print(f"{st.index:>3} {_fmt_ts(st.ts)} {tag:<5} {st.title[:70]}{dur}{conf}"
+        print(f"{st.index:>3} {_fmt_ts(st.ts)} {tag:<5} {_one_line(st.title, 70)}{dur}{conf}"
               f"  tok={st.cumulative_tokens}")
         for f in st.fs:
             print(f"{'':>18}  {f['op']:<7} {f['path']}")
         for x in st.execs:
             rc = "" if x.get("exit_code") is None else f" -> {x['exit_code']}"
-            print(f"{'':>18}  $ {x.get('command', '')[:70]}{rc}")
+            print(f"{'':>18}  $ {_one_line(x.get('command') or '', 70)}{rc}")
 
 
 def cmd_show(args: argparse.Namespace) -> int:

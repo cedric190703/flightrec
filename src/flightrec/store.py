@@ -76,8 +76,10 @@ class Session:
     def _count_existing(self) -> int:
         if not self._events_path.exists():
             return 0
+        # Must agree with events(), which skips blank lines, or seq numbers
+        # would collide after a reopen.
         with self._events_path.open("rb") as f:
-            return sum(1 for _ in f)
+            return sum(1 for line in f if line.strip())
 
     # -- writing --------------------------------------------------------
 

@@ -78,9 +78,12 @@ class LlmProxy:
         self._thread.start()
 
     def stop(self) -> None:
-        self._server.shutdown()
+        # shutdown() blocks until serve_forever() acknowledges, so it must
+        # only be called when the loop is actually running.
+        if self._thread.is_alive():
+            self._server.shutdown()
+            self._thread.join(timeout=2)
         self._server.server_close()
-        self._thread.join(timeout=2)
 
     def env(self, base: dict[str, str] | None = None) -> dict[str, str]:
         env = dict(base if base is not None else os.environ)
