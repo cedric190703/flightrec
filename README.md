@@ -1,5 +1,7 @@
 # flightrec
 
+[![CI](https://github.com/cedric190703/flightrec/actions/workflows/ci.yml/badge.svg)](https://github.com/cedric190703/flightrec/actions/workflows/ci.yml)
+
 **A black-box flight recorder for AI coding agents — works with any harness.**
 
 Run any coding agent (Claude Code, Aider, Codex, OpenCode, …) through

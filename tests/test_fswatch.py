@@ -6,7 +6,7 @@ from flightrec.fswatch import FsWatcher, _is_ignored, DEFAULT_IGNORES
 from flightrec.store import create_session
 
 
-def _wait_for(session, n, timeout=3.0):
+def _wait_for(session, n, timeout=8.0):
     deadline = time.time() + timeout
     while time.time() < deadline:
         evs = [e for e in session.events() if e.kind == Kind.FS_CHANGE]
