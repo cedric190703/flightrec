@@ -50,12 +50,26 @@ class Step:
         return asdict(self)
 
 
+def _strings(v) -> list[str]:
+    if isinstance(v, str):
+        return [v]
+    if isinstance(v, dict):
+        return [x for val in v.values() for x in _strings(val)]
+    if isinstance(v, list):
+        return [x for val in v for x in _strings(val)]
+    return []
+
+
 def _mentions(call_input: dict | None, needle: str) -> bool:
+    """Does the tool call's input plausibly refer to this path or command?"""
     if not call_input or not needle:
         return False
     blob = json.dumps(call_input, ensure_ascii=False)
     tail = needle.rsplit("/", 1)[-1]
-    return needle in blob or (len(tail) > 3 and tail in blob)
+    if needle in blob or (len(tail) > 3 and tail in blob):
+        return True
+    # e.g. call input {"command": "pytest -q"} vs observed "bash -c pytest -q"
+    return any(len(v) > 3 and v.strip() in needle for v in _strings(call_input))
 
 
 def _fs_dict(e: Event) -> dict:
@@ -98,6 +112,7 @@ def build_steps(events: Iterable[Event]) -> list[Step]:
     open_step: Step | None = None
     open_call_ts_end: float | None = None
     total_tokens = 0
+    pending_usage: dict | None = None   # usage of a response whose tool_call has not been seen yet
 
     def close_open():
         nonlocal open_step, open_call_ts_end
@@ -125,6 +140,7 @@ def build_steps(events: Iterable[Event]) -> list[Step]:
                 open_step.duration = round(res.ts - e.ts, 3)
                 open_call_ts_end = res.ts
             open_step.cumulative_tokens = total_tokens
+            open_step.usage, pending_usage = pending_usage, None
         elif k == Kind.TOOL_RESULT:
             continue  # folded into its call above
         elif k == Kind.FS_CHANGE:
@@ -172,9 +188,8 @@ def build_steps(events: Iterable[Event]) -> list[Step]:
                                   text=e.payload.get("text"), usage=u,
                                   cumulative_tokens=total_tokens,
                                   duration=e.payload.get("latency")))
-            elif open_step is None and steps:
-                steps[-1].usage = u
-                steps[-1].cumulative_tokens = total_tokens
+            else:
+                pending_usage = u
         elif k in (Kind.SESSION_START, Kind.SESSION_END):
             close_open()
             steps.append(Step(index=len(steps), kind="session", ts=e.ts,

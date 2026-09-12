@@ -33,7 +33,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     rc = rec.run()
     n = len(rec.session)
     print(f"[flightrec] session {rec.session.id} ended (exit {rc}, {n} events)", file=sys.stderr)
-    print(f"[flightrec] view it with: flightrec show {rec.session.id}", file=sys.stderr)
+    print(f"[flightrec] inspect: flightrec show --steps {rec.session.id}   "
+          f"|   flightrec view {rec.session.id}", file=sys.stderr)
     return rc
 
 
@@ -111,6 +112,25 @@ def cmd_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_view(args: argparse.Namespace) -> int:
+    import webbrowser
+
+    from .server import make_server
+
+    srv = make_server(Path(args.home), port=args.port)
+    url = f"http://127.0.0.1:{srv.server_port}/" + (f"#{args.session}" if args.session else "")
+    print(f"[flightrec] viewer at {url}  (Ctrl-C to stop)", file=sys.stderr)
+    if not args.no_browser:
+        webbrowser.open(url)
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        srv.server_close()
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="flightrec",
                                  description="Flight recorder for AI coding agents.")
@@ -138,6 +158,11 @@ def build_parser() -> argparse.ArgumentParser:
     show.add_argument("--steps", action="store_true",
                       help="show correlated steps instead of raw events")
     show.set_defaults(fn=cmd_show)
+    view = sub.add_parser("view", help="open the web viewer")
+    view.add_argument("session", nargs="?", help="session to open first")
+    view.add_argument("--port", type=int, default=7357)
+    view.add_argument("--no-browser", action="store_true")
+    view.set_defaults(fn=cmd_view)
     return ap
 
 

@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>flightrec</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel2: #1e222b; --border: #2a2f3a;
+    --fg: #e6e8ee; --muted: #8b93a7; --accent: #7aa2f7;
+    --user: #e0af68; --ai: #9ece6a; --tool: #7aa2f7; --exec: #bb9af7; --fs: #7dcfff; --session: #565f89;
+    --add: #1f3b2a; --addfg: #9ece6a; --del: #3b1f27; --delfg: #f7768e;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font-size: 13px; height: 100vh; display: flex; flex-direction: column; }
+  header { display: flex; align-items: center; gap: 16px; padding: 8px 14px; background: var(--panel); border-bottom: 1px solid var(--border); }
+  header h1 { font-size: 15px; margin: 0; letter-spacing: .5px; }
+  header h1 span { color: var(--accent); }
+  header select { background: var(--panel2); color: var(--fg); border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px; font: inherit; max-width: 520px; }
+  .stats { display: flex; gap: 14px; margin-left: auto; color: var(--muted); }
+  .stats b { color: var(--fg); font-weight: 600; }
+  #scrub { display: flex; align-items: center; gap: 10px; padding: 6px 14px; background: var(--panel); border-bottom: 1px solid var(--border); }
+  #scrub input { flex: 1; }
+  #scrub .pos { min-width: 130px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  main { flex: 1; display: grid; grid-template-columns: 380px 1fr 280px; min-height: 0; }
+  main > section { overflow: auto; min-height: 0; }
+  #timeline { border-right: 1px solid var(--border); }
+  #tree { border-left: 1px solid var(--border); padding: 10px; }
+  .step { display: grid; grid-template-columns: 8px 1fr auto; gap: 8px; padding: 7px 12px; border-bottom: 1px solid var(--border); cursor: pointer; align-items: start; }
+  .step:hover { background: var(--panel2); }
+  .step.active { background: var(--panel2); outline: 1px solid var(--accent); outline-offset: -1px; }
+  .step.future { opacity: .35; }
+  .step .bar { width: 4px; border-radius: 2px; height: 100%; min-height: 26px; }
+  .step .title { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .step .sub { color: var(--muted); font-size: 11px; margin-top: 2px; }
+  .step .meta { color: var(--muted); font-size: 11px; text-align: right; white-space: nowrap; }
+  .k-user .bar { background: var(--user); } .k-assistant .bar { background: var(--ai); }
+  .k-tool .bar { background: var(--tool); } .k-exec .bar { background: var(--exec); }
+  .k-fs .bar { background: var(--fs); } .k-session .bar { background: var(--session); }
+  .badge { display: inline-block; padding: 1px 6px; border-radius: 10px; font-size: 10px; background: var(--panel2); border: 1px solid var(--border); color: var(--muted); margin-left: 4px; }
+  .badge.strong { color: var(--ai); border-color: var(--ai); }
+  .badge.timing { color: var(--user); border-color: var(--user); }
+  .badge.err { color: var(--delfg); border-color: var(--delfg); }
+  #inspector { padding: 14px 18px; }
+  #inspector h2 { font-size: 14px; margin: 0 0 4px; font-family: ui-monospace, Menlo, monospace; word-break: break-all; }
+  #inspector h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); margin: 18px 0 6px; }
+  pre { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 10px; overflow: auto; margin: 0; font-size: 12px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
+  .diff { font-family: ui-monospace, Menlo, monospace; font-size: 12px; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; margin-bottom: 10px; }
+  .diff .file { background: var(--panel2); padding: 6px 10px; display: flex; gap: 10px; align-items: center; }
+  .diff .file b { font-weight: 600; }
+  .diff .file .add { color: var(--addfg); } .diff .file .del { color: var(--delfg); }
+  .diff .body { max-height: 420px; overflow: auto; background: var(--panel); }
+  .diff .line { padding: 0 10px; white-space: pre; }
+  .diff .line.a { background: var(--add); color: var(--addfg); }
+  .diff .line.d { background: var(--del); color: var(--delfg); }
+  .diff .line.h { color: var(--accent); }
+  .exec { border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; background: var(--panel); font-family: ui-monospace, Menlo, monospace; }
+  .exec .rc { float: right; color: var(--muted); }
+  .exec .rc.bad { color: var(--delfg); }
+  #tree h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); margin: 0 0 8px; }
+  #tree .f { font-family: ui-monospace, Menlo, monospace; font-size: 12px; padding: 3px 4px; border-radius: 3px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #tree .f:hover { background: var(--panel2); }
+  #tree .f.deleted { color: var(--delfg); text-decoration: line-through; }
+  #tree .f.touched { color: var(--fs); }
+  .empty { color: var(--muted); padding: 30px; text-align: center; }
+  kbd { background: var(--panel2); border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; font-size: 11px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } #tree { display: none; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>flight<span>rec</span></h1>
+  <select id="sessions"></select>
+  <div class="stats" id="stats"></div>
+</header>
+<div id="scrub">
+  <span class="pos" id="pos">step –</span>
+  <input type="range" id="slider" min="0" max="0" value="0">
+  <span style="color:var(--muted)"><kbd>←</kbd> <kbd>→</kbd> to step</span>
+</div>
+<main>
+  <section id="timeline"><div class="empty">No session loaded.</div></section>
+  <section id="inspector"><div class="empty">Select a step.</div></section>
+  <section id="tree"><h3>Working tree at this step</h3><div id="files"></div></section>
+</main>
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const fmtTs = (t) => { const d = new Date(t * 1000); return d.toTimeString().slice(0, 8) + "." + String(d.getMilliseconds()).padStart(3, "0"); };
+const fmtTok = (n) => n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n);
+
+let data = null, current = 0;
+
+async function loadSessions() {
+  const list = await (await fetch("/api/sessions")).json();
+  const sel = $("#sessions");
+  sel.innerHTML = list.map(s => `<option value="${s.id}">${s.id} · ${esc(s.harness || "?")} · ${esc((s.command || []).join(" ")).slice(0, 60)}</option>`).join("");
+  const want = location.hash.slice(1) || (list[0] && list[0].id);
+  if (want) { sel.value = want; await loadSession(want); }
+  sel.onchange = () => loadSession(sel.value);
+}
+
+async function loadSession(id) {
+  location.hash = id;
+  data = await (await fetch(`/api/sessions/${id}`)).json();
+  const m = data.meta, steps = data.steps;
+  const tools = steps.filter(s => s.kind === "tool").length;
+  const cmds = steps.reduce((n, s) => n + s.execs.length, 0);
+  const files = new Set(steps.flatMap(s => s.fs.map(f => f.path))).size;
+  const tokens = steps.length ? steps[steps.length - 1].cumulative_tokens : 0;
+  const dur = m.ended && m.started ? ((m.ended - m.started)).toFixed(0) + "s" : "…";
+  $("#stats").innerHTML = `<span><b>${steps.length}</b> steps</span><span><b>${tools}</b> tool calls</span><span><b>${cmds}</b> commands</span><span><b>${files}</b> files</span><span><b>${fmtTok(tokens)}</b> tokens</span><span><b>${dur}</b></span>`;
+  renderTimeline();
+  $("#slider").max = Math.max(0, steps.length - 1);
+  select(steps.length - 1);
+}
+
+function renderTimeline() {
+  const tl = $("#timeline");
+  if (!data.steps.length) { tl.innerHTML = '<div class="empty">No events.</div>'; return; }
+  tl.innerHTML = data.steps.map(s => {
+    const sub = [];
+    if (s.fs.length) sub.push(`${s.fs.length} file${s.fs.length > 1 ? "s" : ""}`);
+    if (s.execs.length) sub.push(`${s.execs.length} cmd${s.execs.length > 1 ? "s" : ""}`);
+    if (s.result && s.result.is_error) sub.push('<span class="badge err">error</span>');
+    if (s.confidence !== "n/a" && s.kind === "tool") sub.push(`<span class="badge ${s.confidence}">${s.confidence}</span>`);
+    const bad = s.execs.some(x => x.exit_code) ? '<span class="badge err">exit≠0</span>' : "";
+    return `<div class="step k-${s.kind}" data-i="${s.index}" onclick="select(${s.index})">
+      <div class="bar"></div>
+      <div><div class="title">${esc(s.title)}${bad}</div><div class="sub">${s.kind}${sub.length ? " · " + sub.join(" · ") : ""}</div></div>
+      <div class="meta">${fmtTs(s.ts)}<br>${s.duration != null ? s.duration + "s" : ""}</div>
+    </div>`;
+  }).join("");
+}
+
+function select(i) {
+  if (!data) return;
+  current = Math.max(0, Math.min(i, data.steps.length - 1));
+  $("#slider").value = current;
+  $("#pos").textContent = `step ${current} / ${data.steps.length - 1}`;
+  document.querySelectorAll(".step").forEach(el => {
+    const k = +el.dataset.i;
+    el.classList.toggle("active", k === current);
+    el.classList.toggle("future", k > current);
+  });
+  const active = document.querySelector(".step.active");
+  if (active) active.scrollIntoView({ block: "nearest" });
+  renderInspector(data.steps[current]);
+  renderTree();
+}
+
+async function renderInspector(s) {
+  const el = $("#inspector");
+  let html = `<h2>${esc(s.title)}</h2><div style="color:var(--muted)">${s.kind} · ${fmtTs(s.ts)}${s.duration != null ? " · " + s.duration + "s" : ""} · ${fmtTok(s.cumulative_tokens)} tokens so far</div>`;
+  if (s.text) html += `<h3>${s.kind === "user" ? "User message" : "Assistant"}</h3><pre>${esc(s.text)}</pre>`;
+  if (s.call) {
+    html += `<h3>Tool call · ${esc(s.call.name)} <span class="badge ${s.confidence}">${s.confidence}</span></h3><pre>${esc(JSON.stringify(s.call.input, null, 2))}</pre>`;
+  }
+  if (s.execs.length) {
+    html += `<h3>Commands</h3>` + s.execs.map(x => `<div class="exec"><span class="rc ${x.exit_code ? "bad" : ""}">${x.exit_code == null ? "" : "exit " + x.exit_code}${x.duration != null ? " · " + x.duration + "s" : ""}</span>$ ${esc(x.command)}<div style="color:var(--muted);font-size:11px">${esc(x.cwd || "")}</div></div>`).join("");
+  }
+  if (s.fs.length) {
+    html += `<h3>File changes</h3><div id="diffs">loading…</div>`;
+  }
+  if (s.result) {
+    html += `<h3>Tool result${s.result.is_error ? ' <span class="badge err">error</span>' : ""}</h3><pre>${esc(s.result.content)}</pre>`;
+  }
+  if (s.usage && (s.usage.input || s.usage.output)) {
+    html += `<h3>Usage</h3><pre>${esc(JSON.stringify(s.usage))}</pre>`;
+  }
+  el.innerHTML = html;
+  if (s.fs.length) {
+    const parts = await Promise.all(s.fs.map(async f => {
+      const d = await (await fetch(`/api/sessions/${data.meta.id}/diff?before=${f.before || ""}&after=${f.after || ""}&path=${encodeURIComponent(f.path)}`)).json();
+      if (d.binary) return `<div class="diff"><div class="file"><b>${esc(f.path)}</b> binary · ${d.before_size} → ${d.after_size} B</div></div>`;
+      const lines = d.diff.split("\n").slice(2).map(l => {
+        const c = l.startsWith("+") ? "a" : l.startsWith("-") ? "d" : l.startsWith("@@") ? "h" : "";
+        return `<div class="line ${c}">${esc(l)}</div>`;
+      }).join("");
+      return `<div class="diff"><div class="file"><b>${esc(f.path)}</b> <span>${f.op}</span> <span class="add">+${d.added}</span> <span class="del">−${d.removed}</span></div><div class="body">${lines || '<div class="line" style="color:var(--muted)">(no textual change)</div>'}</div></div>`;
+    }));
+    const box = $("#diffs");
+    if (box) box.innerHTML = parts.join("");
+  }
+}
+
+function renderTree() {
+  // Replay snapshots up to the current step to know the tree at that moment.
+  const state = {};
+  const touchedNow = new Set(data.steps[current].fs.map(f => f.path));
+  for (let i = 0; i <= current; i++) for (const f of data.steps[i].fs) state[f.path] = f.after;
+  const paths = Object.keys(state).sort();
+  $("#files").innerHTML = paths.length ? paths.map(p => {
+    const cls = state[p] === null ? "deleted" : touchedNow.has(p) ? "touched" : "";
+    return `<div class="f ${cls}" title="${esc(p)}" onclick="openBlob('${state[p] || ""}','${esc(p)}')">${esc(p)}</div>`;
+  }).join("") : '<div style="color:var(--muted)">No files touched yet.</div>';
+}
+
+function openBlob(sha, path) {
+  if (!sha) return;
+  window.open(`/api/sessions/${data.meta.id}/blob/${sha}`, "_blank");
+}
+
+$("#slider").oninput = (e) => select(+e.target.value);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "ArrowLeft") select(current - 1);
+  if (e.key === "ArrowRight") select(current + 1);
+});
+loadSessions();
+</script>
+</body>
+</html>

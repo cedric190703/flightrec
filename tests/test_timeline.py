@@ -38,6 +38,8 @@ def test_tool_call_absorbs_fs_and_exec_between_call_and_result():
     assert tool.result["content"] == "ok"
     assert tool.duration == 0.6
     assert tool.cumulative_tokens == 15
+    assert tool.usage == {"input": 10, "output": 5}     # the response that produced the call
+    assert steps[1].cumulative_tokens == 0              # user step: nothing spent yet
 
     assert steps[3].cumulative_tokens == 37
     assert steps[4].title == "create stray.txt"   # orphan fs event becomes its own step
@@ -51,6 +53,16 @@ def test_timing_only_attribution():
     ]
     (step,) = build_steps(evs)
     assert step.confidence == "timing"
+
+
+def test_command_substring_is_strong():
+    evs = [
+        _ev(Kind.TOOL_CALL, {"name": "Bash", "input": {"command": "pytest -q"}}, 1.0, id="c1", seq=0),
+        _ev(Kind.EXEC, {"command": "bash -c pytest -q"}, 1.1, id="x", seq=1),
+        _ev(Kind.TOOL_RESULT, {"content": ""}, 1.5, id="r1", links=["c1"], seq=2),
+    ]
+    (step,) = build_steps(evs)
+    assert step.confidence == "strong"
 
 
 def test_no_proxy_recording_still_yields_steps():
