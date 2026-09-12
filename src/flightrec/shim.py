@@ -131,7 +131,8 @@ class ExecCollector:
         if rec.get("phase") == "start":
             ev = Event(Kind.EXEC, Source.SHIM, {
                 "argv": rec["argv"], "real": rec["real"], "cwd": rec["cwd"],
-                "command": " ".join(rec["argv"]), "exit_code": None, "duration": None,
+                "command": " ".join([os.path.basename(rec["real"]), *rec["argv"]]),
+                "exit_code": None, "duration": None,
             }, ts=rec["ts"])
             self._open[rec["id"]] = ev
             self.session.append(ev)
