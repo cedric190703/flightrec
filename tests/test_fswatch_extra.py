@@ -3,6 +3,8 @@
 import time
 from pathlib import Path
 
+import pytest
+
 import flightrec.fswatch as fswatch
 from flightrec.events import Kind
 from flightrec.fswatch import DEFAULT_IGNORES, FsWatcher, _is_ignored
@@ -105,6 +107,45 @@ def test_default_ignores_cover_common_noise():
         assert _is_ignored(rel, DEFAULT_IGNORES), rel
     for rel in ["src/app.py", "README.md", "tests/test_x.py", "distribution.md"]:
         assert not _is_ignored(rel, DEFAULT_IGNORES), rel
+
+
+def test_macos_python_314_uses_polling_observer(monkeypatch):
+    monkeypatch.setattr(fswatch.sys, "platform", "darwin")
+    monkeypatch.setattr(fswatch.sys, "version_info", (3, 14))
+    assert isinstance(fswatch._default_observer(), fswatch.PollingObserver)
+
+
+def test_watcher_stop_is_idempotent_and_prevents_restart(tmp_path):
+    class FakeObserver:
+        def __init__(self):
+            self.alive = False
+            self.scheduled = 0
+
+        def schedule(self, *_args, **_kwargs):
+            self.scheduled += 1
+
+        def start(self):
+            self.alive = True
+
+        def is_alive(self):
+            return self.alive
+
+        def stop(self):
+            self.alive = False
+
+        def join(self, timeout):
+            assert timeout == 2
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    observer = FakeObserver()
+    w = FsWatcher(proj, create_session(tmp_path / "home"), observer_factory=lambda: observer)
+    w.start()
+    w.stop()
+    w.stop()
+    assert observer.scheduled == 1
+    with pytest.raises(RuntimeError, match="cannot restart"):
+        w.start()
 
 
 def test_live_watcher_records_rename_as_delete_plus_create(tmp_path):

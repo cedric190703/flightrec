@@ -120,3 +120,20 @@ def test_recorder_env_composition(tmp_path: Path):
     no_proxy = Recorder(["true"], proj, root=tmp_path / "home", proxy=False)
     assert "FLIGHTREC_PROXY" not in no_proxy._env()
     no_proxy._shim.cleanup()
+
+
+def test_recorder_setup_failure_closes_session_and_returns_125(tmp_path: Path, monkeypatch):
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    r = Recorder(["true"], proj, root=tmp_path / "home", proxy=False)
+
+    def fail_start():
+        raise RuntimeError("watcher unavailable")
+
+    monkeypatch.setattr(r._fs, "start", fail_start)
+    assert r.run() == 125
+    assert r.session.read_meta()["exit_code"] == 125
+    events = list(r.session.events())
+    assert events[-1].kind == Kind.SESSION_END
+    note = next(e for e in events if e.kind == Kind.NOTE)
+    assert "recorder setup failed: watcher unavailable" == note.payload["error"]

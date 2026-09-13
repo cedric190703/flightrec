@@ -68,6 +68,7 @@ class LlmProxy:
         self._server = ThreadingHTTPServer((host, port), Handler)
         self._server.daemon_threads = True
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._closed = False
 
     @property
     def base_url(self) -> str:
@@ -75,11 +76,18 @@ class LlmProxy:
         return f"http://{h}:{p}"
 
     def start(self) -> None:
+        if self._closed:
+            raise RuntimeError("cannot restart a stopped LlmProxy")
+        if self._thread.is_alive():
+            return
         self._thread.start()
 
     def stop(self) -> None:
         # shutdown() blocks until serve_forever() acknowledges, so it must
         # only be called when the loop is actually running.
+        if self._closed:
+            return
+        self._closed = True
         if self._thread.is_alive():
             self._server.shutdown()
             self._thread.join(timeout=2)

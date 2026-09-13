@@ -103,11 +103,15 @@ through `/to/<host>`; add a parser in `wire.py` to structure it.
 ## Development
 
 ```bash
-pytest            # full suite
+.venv/bin/python -m pytest -q  # full suite
 ```
 
 No runtime dependencies beyond `watchdog`; the proxy, server and viewer use
 only the standard library. The viewer is a single dependency-free HTML file.
+
+Development and CI are supported on Python 3.11–3.13. See
+[`docs/development.md`](docs/development.md) for setup, targeted test commands,
+and the macOS/Python 3.14 filesystem-observer fallback.
 
 ## License
 

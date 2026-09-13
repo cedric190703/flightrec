@@ -12,12 +12,16 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import sys
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
+from watchdog.observers.api import BaseObserver
+from watchdog.observers.polling import PollingObserver
 
 from .events import Event, Kind, Snapshot, Source
 from .store import Session
@@ -37,6 +41,18 @@ DEFAULT_IGNORES = [
 # (truncate, write, chmod). Coalesce changes to the same path inside this window.
 DEBOUNCE_S = 0.15
 MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024
+
+
+def _default_observer() -> BaseObserver:
+    """Return the most reliable observer for the current runtime.
+
+    Watchdog's native macOS FSEvents extension has crashed on some Python 3.14
+    builds. Polling is less efficient, but keeps recording functional instead
+    of risking a process crash while upstream support catches up.
+    """
+    if sys.platform == "darwin" and sys.version_info >= (3, 14):
+        return PollingObserver(timeout=0.1)
+    return Observer()
 
 
 def _is_ignored(rel: str, patterns: list[str]) -> bool:
@@ -63,7 +79,8 @@ class _Handler(FileSystemEventHandler):
 
 
 class FsWatcher:
-    def __init__(self, root: Path, session: Session, ignores: list[str] | None = None):
+    def __init__(self, root: Path, session: Session, ignores: list[str] | None = None,
+                 observer_factory: Callable[[], BaseObserver] | None = None):
         self.root = root.resolve()
         self.session = session
         self.ignores = DEFAULT_IGNORES + (ignores or [])
@@ -72,23 +89,42 @@ class FsWatcher:
         self._pending: dict[str, tuple[float, float]] = {}
         self._lock = threading.Lock()
         self._stop = threading.Event()
-        self._observer = Observer()
+        self._observer = (observer_factory or _default_observer)()
         self._flusher = threading.Thread(target=self._flush_loop, daemon=True)
+        self._running = False
+        self._closed = False
 
     # -- lifecycle ------------------------------------------------------
 
     def start(self) -> None:
+        if self._running:
+            return
+        if self._closed:
+            raise RuntimeError("cannot restart a stopped FsWatcher")
         self._seed_index()
         self._observer.schedule(_Handler(self), str(self.root), recursive=True)
-        self._observer.start()
-        self._flusher.start()
+        try:
+            self._observer.start()
+            self._flusher.start()
+        except Exception:
+            if self._observer.is_alive():
+                self._observer.stop()
+                self._observer.join(timeout=2)
+            raise
+        self._running = True
 
     def stop(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
         self._stop.set()
-        self._observer.stop()
-        self._observer.join(timeout=2)
-        self._flusher.join(timeout=2)
+        if self._observer.is_alive():
+            self._observer.stop()
+            self._observer.join(timeout=2)
+        if self._flusher.is_alive():
+            self._flusher.join(timeout=2)
         self._flush(force=True)
+        self._running = False
 
     # -- internals ------------------------------------------------------
 

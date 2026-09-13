@@ -104,9 +104,15 @@ class ExecCollector:
         self._pos = 0
 
     def start(self) -> None:
+        if self._thread.is_alive():
+            return
+        if self._stop.is_set():
+            raise RuntimeError("cannot restart a stopped ExecCollector")
         self._thread.start()
 
     def stop(self) -> None:
+        if not self._thread.is_alive():
+            return
         self._stop.set()
         self._thread.join(timeout=2)
         self.drain()
