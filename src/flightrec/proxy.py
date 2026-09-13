@@ -18,6 +18,7 @@ HTTPS upstream, so no certificates are needed.
 from __future__ import annotations
 
 import http.client
+import json
 import os
 import socket
 import ssl
@@ -138,6 +139,10 @@ class LlmProxy:
                 self.session.append(ev)
 
 
+def _error_body(message: str) -> bytes:
+    return json.dumps({"error": message}).encode("utf-8")
+
+
 class _Handler(BaseHTTPRequestHandler):
     proxy_ref: LlmProxy
     protocol_version = "HTTP/1.1"
@@ -149,12 +154,18 @@ class _Handler(BaseHTTPRequestHandler):
         ts_req = time.time()
         resolved = self.proxy_ref.resolve(self.path.split("?")[0])
         if resolved is None:
-            self._reply(404, b'{"error":"flightrec: unknown route"}')
+            self._reply(404, _error_body("flightrec: unknown route"))
             return
         route, base, up_path = resolved
         if "?" in self.path:
             up_path += "?" + self.path.split("?", 1)[1]
-        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if length < 0:
+            self._reply(400, _error_body("flightrec: bad Content-Length"))
+            return
         body = self.rfile.read(length) if length else b""
 
         u = urlsplit(base)
@@ -173,7 +184,7 @@ class _Handler(BaseHTTPRequestHandler):
             conn.request(self.command, up_path, body=body or None, headers=fwd)
             resp = conn.getresponse()
         except (OSError, http.client.HTTPException) as exc:
-            self._reply(502, f'{{"error":"flightrec upstream failure: {exc}"}}'.encode())
+            self._reply(502, _error_body(f"flightrec upstream failure: {exc}"))
             return
 
         self.send_response(resp.status, resp.reason)

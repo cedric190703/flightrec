@@ -62,6 +62,22 @@ Plain files, no database: `~/.flightrec/sessions/<id>/` holds `meta.json`,
 an append-only `events.jsonl`, and a content-addressed `blobs/` directory
 for file snapshots. Easy to inspect, diff and ship to the viewer.
 
+Everything under a session directory is treated as damaged-until-proven
+otherwise, since a crash can truncate a write and the files are meant to be
+shared:
+
+- `meta.json` is written atomically (temp file + rename) and reads as `{}`
+  when missing or unparsable, so one bad session cannot break `list` or the
+  viewer.
+- `events.jsonl` readers skip lines that fail to parse (`Session.events(
+  strict=True)` raises instead). Each event carries its own `seq`, so the
+  survivors keep their numbers. A partial final line is terminated before the
+  next append rather than silently merged into it.
+- Session ids and blob hashes are validated (`[A-Za-z0-9._-]`, resp. 64 hex
+  chars) before being joined onto a path, because both arrive from URLs and
+  CLI arguments. `fork` likewise refuses snapshot paths that would escape the
+  destination directory.
+
 ## Known limitations
 
 - Commands invoked by absolute path (`/bin/sh -c ...`) bypass the PATH shim;

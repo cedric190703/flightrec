@@ -75,15 +75,25 @@ class Recorder:
             self.session.end(rc)
         return rc
 
+    # Escalation on repeated Ctrl-C: the child already received SIGINT with
+    # us; if it is still alive after a grace period we send these in turn.
+    _ESCALATION = (signal.SIGTERM, signal.SIGKILL)
+    _GRACE_S = 0.5
+
     def _wait(self) -> int:
         """Wait for the child, forwarding Ctrl-C so interactive harnesses exit cleanly."""
         assert self._proc is not None
+        interrupts = 0
         while True:
             try:
                 return self._proc.wait()
             except KeyboardInterrupt:
-                # The child is in our process group and already got SIGINT;
-                # give it a moment, then escalate if it ignores us.
-                time.sleep(0.5)
-                if self._proc.poll() is None:
-                    self._proc.send_signal(signal.SIGTERM)
+                time.sleep(self._GRACE_S)
+                if self._proc.poll() is not None:
+                    continue
+                sig = self._ESCALATION[min(interrupts, len(self._ESCALATION) - 1)]
+                interrupts += 1
+                try:
+                    self._proc.send_signal(sig)
+                except ProcessLookupError:
+                    pass  # exited between poll() and the signal

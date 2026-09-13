@@ -17,7 +17,8 @@ def test_dicts_and_text_of_helpers():
     assert _dicts([{"a": 1}, "x", None, 3]) == [{"a": 1}]
     assert _dicts("str") == [] and _dicts(None) == [] and _dicts({"a": 1}) == []
     assert _text_of("plain") == "plain"
-    assert _text_of([{"type": "text", "text": "a"}, {"type": "image"}, "junk"]) == "a\n"
+    assert _text_of([{"type": "text", "text": "a"}, {"type": "image"}, "junk"]) == "a"
+    assert _text_of([{"type": "text", "text": "a"}, {"type": "text", "text": 5}, {"text": "b"}]) == "a\nb"
     assert _text_of(None) == ""
 
 
@@ -142,7 +143,7 @@ def test_anthropic_tool_result_list_content_and_error_flag():
     evs = extract("anthropic", "/v1/messages", json.dumps(req), "{}", 200, False, Dedup(), 0, 1)
     assert _kinds(evs) == [Kind.LLM_REQUEST, Kind.TOOL_RESULT, Kind.LLM_RESPONSE]
     r = evs[1].payload
-    assert r["is_error"] is True and r["content"] == "line1\n" and evs[1].links == ["t1"]
+    assert r["is_error"] is True and r["content"] == "line1" and evs[1].links == ["t1"]
 
 
 def test_anthropic_user_text_non_string_is_ignored():

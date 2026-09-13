@@ -131,15 +131,17 @@ class FsWatcher:
     def _rel(self, path: Path) -> str | None:
         try:
             rel = path.resolve().relative_to(self.root).as_posix()
-        except ValueError:
+        except (ValueError, OSError, RuntimeError):  # outside root, vanished, symlink loop
             return None
         return None if _is_ignored(rel, self.ignores) else rel
 
     def _seed_index(self) -> None:
         for dirpath, dirnames, filenames in os.walk(self.root):
             rel_dir = Path(dirpath).relative_to(self.root).as_posix()
-            dirnames[:] = [d for d in dirnames
-                           if not _is_ignored(f"{rel_dir}/{d}".lstrip("./"), self.ignores)]
+            # ``rel_dir`` is "." at the root; a naive f"{rel_dir}/{d}".lstrip("./")
+            # would also strip the leading dot of ".git" and defeat the prune.
+            prefix = "" if rel_dir == "." else rel_dir + "/"
+            dirnames[:] = [d for d in dirnames if not _is_ignored(prefix + d, self.ignores)]
             for fn in filenames:
                 p = Path(dirpath) / fn
                 rel = self._rel(p)
@@ -150,7 +152,7 @@ class FsWatcher:
         try:
             if path.stat().st_size > MAX_SNAPSHOT_BYTES:
                 return None
-        except FileNotFoundError:
+        except OSError:  # vanished, unreadable, or a path component is not a dir
             return None
         return self.session.blobs.put_file(path)
 
@@ -164,7 +166,16 @@ class FsWatcher:
 
     def _flush_loop(self) -> None:
         while not self._stop.wait(0.05):
-            self._flush()
+            try:
+                self._flush()
+            except Exception as exc:  # noqa: BLE001 - one bad path must not end the watch
+                self._note(f"fs flush failed: {exc!r}")
+
+    def _note(self, error: str) -> None:
+        try:
+            self.session.append(Event(Kind.NOTE, Source.FS, {"error": error}))
+        except Exception:  # noqa: BLE001 - the log itself is unwritable; nothing left to do
+            pass
 
     def _flush(self, force: bool = False) -> None:
         now = time.monotonic()
@@ -185,16 +196,18 @@ class FsWatcher:
         """
         path = self.root / rel
         before = self._index.get(rel)
-        exists = path.is_file()
-        after = self._snapshot(path) if exists else None
+        try:
+            size = path.stat().st_size if path.is_file() else None
+        except OSError:  # deleted between the two calls, or unreadable
+            size = None
+        after = self._snapshot(path) if size is not None else None
         if before == after:
             return  # touch / no-op write
         self._index[rel] = after
         op = "create" if before is None else "delete" if after is None else "modify"
-        size = path.stat().st_size if exists else 0
         self.session.append(Event(
             Kind.FS_CHANGE, Source.FS,
-            {"path": rel, "op": op, "size": size},
+            {"path": rel, "op": op, "size": size or 0},
             ts=ts if ts is not None else time.time(),
             snapshots=[Snapshot(rel, before, after)],
         ))

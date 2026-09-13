@@ -53,10 +53,14 @@ def _dicts(v: Any) -> list[dict]:
 
 
 def _text_of(c: Any) -> str:
-    """Flatten a content value that is either a string or a list of text blocks."""
+    """Flatten a content value that is either a string or a list of text blocks.
+
+    OpenAI content parts carry either ``text`` or (Responses API) ``output_text``
+    under ``text`` too; image/audio parts have neither and are skipped.
+    """
     if isinstance(c, str):
         return c
-    return "\n".join(str(x.get("text", "")) for x in _dicts(c))
+    return "\n".join(str(x["text"]) for x in _dicts(c) if isinstance(x.get("text"), str))
 
 
 def detect_provider(path: str, headers: dict[str, str]) -> str:
@@ -280,7 +284,7 @@ def _openai_chat(req, resp_body, streamed, dedup, request_ev, ts_req, ts_resp):
             tid = m.get("tool_call_id", "")
             if dedup.first(dedup.seen_results, tid):
                 events.append(Event(Kind.TOOL_RESULT, Source.PROXY, {
-                    "tool_use_id": tid, "is_error": False, "content": _clip(m.get("content")),
+                    "tool_use_id": tid, "is_error": False, "content": _clip(_text_of(m.get("content"))),
                 }, ts=ts_req, links=[tid]))
 
     if streamed:
@@ -331,7 +335,7 @@ def _openai_responses(req, resp_body, streamed, dedup, request_ev, ts_req, ts_re
             tid = item.get("call_id", "")
             if dedup.first(dedup.seen_results, tid):
                 events.append(Event(Kind.TOOL_RESULT, Source.PROXY, {
-                    "tool_use_id": tid, "is_error": False, "content": _clip(item.get("output")),
+                    "tool_use_id": tid, "is_error": False, "content": _clip(_text_of(item.get("output"))),
                 }, ts=ts_req, links=[tid]))
 
     body = openai_responses_sse_to_message(parse_sse(resp_body)) if streamed \

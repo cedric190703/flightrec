@@ -119,7 +119,10 @@ class ExecCollector:
 
     def _loop(self) -> None:
         while not self._stop.wait(0.1):
-            self.drain()
+            try:
+                self.drain()
+            except Exception as exc:  # noqa: BLE001 - keep tailing after one bad record
+                self.session.append(Event(Kind.NOTE, Source.SHIM, {"error": f"exec log: {exc!r}"}))
 
     def drain(self) -> None:
         if not self.log_path.exists():
@@ -139,23 +142,34 @@ class ExecCollector:
                     self._handle(rec)
 
     def _handle(self, rec: dict) -> None:
+        rec_id = rec.get("id")
+        if not isinstance(rec_id, str) or not rec_id:
+            return  # the shim could not obtain an id; nothing to pair
+        ts = _timestamp(rec.get("ts"))
         if rec.get("phase") == "start":
-            argv = [str(a) for a in rec.get("argv") or []]
+            argv = [str(a) for a in rec.get("argv") or []] if isinstance(rec.get("argv"), list) else []
             real = str(rec.get("real") or "")
             ev = Event(Kind.EXEC, Source.SHIM, {
                 "argv": argv, "real": real, "cwd": rec.get("cwd"),
                 "command": " ".join([os.path.basename(real), *argv]),
                 "exit_code": None, "duration": None,
-            }, ts=rec.get("ts") or time.time())
-            self._open[rec["id"]] = ev
+            }, ts=ts)
+            self._open[rec_id] = ev
             self.session.append(ev)
         elif rec.get("phase") == "end":
-            ev = self._open.pop(rec["id"], None)
+            ev = self._open.pop(rec_id, None)
             if ev is None:
                 return
+            exit_code = rec.get("exit_code")
             # Emit completion as a separate linked event; the log is append-only.
-            ts = rec.get("ts") or time.time()
             self.session.append(Event(Kind.EXEC, Source.SHIM, {
-                "phase": "end", "exit_code": rec.get("exit_code"),
-                "duration": round(ts - ev.ts, 3), "command": ev.payload["command"],
+                "phase": "end", "exit_code": exit_code if isinstance(exit_code, int) else None,
+                "duration": round(max(ts - ev.ts, 0.0), 3), "command": ev.payload["command"],
             }, ts=ts, links=[ev.id]))
+
+
+def _timestamp(v: object) -> float:
+    """A wall-clock time from an untrusted log field, or now."""
+    if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
+        return float(v)
+    return time.time()

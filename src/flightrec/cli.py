@@ -92,12 +92,12 @@ def cmd_show(args: argparse.Namespace) -> int:
         p = e.payload
         match e.kind:
             case Kind.FS_CHANGE:
-                desc = f"{p['op']:<7} {p['path']} ({p['size']} B)"
+                desc = f"{p.get('op', '?'):<7} {p.get('path')} ({p.get('size', 0)} B)"
             case Kind.EXEC:
                 if p.get("phase") == "end":
-                    desc = f"  -> exit {p['exit_code']} in {p['duration']}s"
+                    desc = f"  -> exit {p.get('exit_code')} in {p.get('duration')}s"
                 else:
-                    desc = f"$ {p['command']}"
+                    desc = f"$ {p.get('command') or ''}"
             case Kind.LLM_REQUEST:
                 desc = f"-> {p.get('provider')} {p.get('model')} ({p.get('n_messages')} msgs)"
             case Kind.LLM_RESPONSE:
@@ -105,15 +105,15 @@ def cmd_show(args: argparse.Namespace) -> int:
                 desc = (f"<- {p.get('stop_reason')} in={u.get('input')} out={u.get('output')} "
                         f"{p.get('latency')}s  {str(p.get('text', ''))[:60]!r}")
             case Kind.USER_MESSAGE:
-                desc = f"user: {p['text'][:80]!r}"
+                desc = f"user: {str(p.get('text') or '')[:80]!r}"
             case Kind.TOOL_CALL:
-                desc = f"call {p['name']} {str(p.get('input'))[:80]}"
+                desc = f"call {p.get('name')} {str(p.get('input'))[:80]}"
             case Kind.TOOL_RESULT:
                 desc = f"result{' ERROR' if p.get('is_error') else ''}: {str(p.get('content'))[:70]!r}"
             case Kind.SESSION_START:
-                desc = f"start {' '.join(p['command'])} in {p['cwd']}"
+                desc = f"start {' '.join(map(str, p.get('command') or []))} in {p.get('cwd')}"
             case Kind.SESSION_END:
-                desc = f"end (exit {p['exit_code']})"
+                desc = f"end (exit {p.get('exit_code')})"
             case _:
                 desc = str(p)[:120]
         print(f"{e.seq:>4} {_fmt_ts(e.ts)} {e.kind:<13} {e.source:<10} {desc}")
@@ -125,7 +125,11 @@ def cmd_view(args: argparse.Namespace) -> int:
 
     from .server import make_server
 
-    srv = make_server(Path(args.home), port=args.port)
+    try:
+        srv = make_server(Path(args.home), port=args.port)
+    except OSError as exc:
+        print(f"flightrec view: cannot listen on port {args.port}: {exc}", file=sys.stderr)
+        return 1
     url = f"http://127.0.0.1:{srv.server_port}/" + (f"#{args.session}" if args.session else "")
     print(f"[flightrec] viewer at {url}  (Ctrl-C to stop)", file=sys.stderr)
     if not args.no_browser:

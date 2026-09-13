@@ -42,6 +42,7 @@ def materialize(session: Session, upto_seq: int, dest: Path) -> list[str]:
     cannot be recovered from the recording (documented limitation).
     """
     dest.mkdir(parents=True, exist_ok=True)
+    dest = dest.resolve()
     state = _original_tree(session)
     state.update(files_at(session.events(), upto_seq))
 
@@ -49,11 +50,21 @@ def materialize(session: Session, upto_seq: int, dest: Path) -> list[str]:
     for path, sha in sorted(state.items()):
         if sha is None or not session.blobs.has(sha):
             continue  # deleted by this point, or content not captured
-        target = dest / path
+        target = _inside(dest, path)
+        if target is None:
+            continue  # the log is untrusted: never write outside dest
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(session.blobs.get(sha))
         written.append(path)
     return written
+
+
+def _inside(dest: Path, rel: str) -> Path | None:
+    """``dest / rel`` if the result stays within ``dest``, else ``None``."""
+    if not rel or Path(rel).is_absolute():
+        return None
+    target = (dest / rel).resolve()
+    return target if dest in target.parents else None
 
 
 def summary_markdown(session: Session, upto_seq: int) -> str:

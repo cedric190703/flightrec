@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -22,9 +23,25 @@ from .events import Event, Kind, Source
 
 DEFAULT_ROOT = Path(os.environ.get("FLIGHTREC_HOME", Path.home() / ".flightrec"))
 
+# Session ids and blob hashes come from URLs and CLI arguments, and both are
+# joined onto paths; anything that is not a plain name must be rejected.
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
 
 def new_session_id() -> str:
     return time.strftime("%Y%m%d-%H%M%S") + "-" + os.urandom(2).hex()
+
+
+def is_valid_session_id(session_id: str) -> bool:
+    return bool(_SESSION_ID_RE.fullmatch(session_id))
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write via a temp file + rename so a crash never leaves a half-written file."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
 
 
 class BlobStore:
@@ -48,10 +65,12 @@ class BlobStore:
             return None
 
     def get(self, sha: str) -> bytes:
+        if not _SHA256_RE.fullmatch(sha):
+            raise FileNotFoundError(f"not a blob hash: {sha[:80]!r}")
         return (self.dir / sha).read_bytes()
 
     def has(self, sha: str) -> bool:
-        return (self.dir / sha).exists()
+        return bool(_SHA256_RE.fullmatch(sha)) and (self.dir / sha).is_file()
 
 
 class Session:
@@ -63,6 +82,7 @@ class Session:
         self.blobs = BlobStore(self.dir / "blobs")
         self._events_path = self.dir / "events.jsonl"
         self._lock = threading.Lock()
+        self._unterminated = False   # last line lacks "\n" (crash mid-write)
         self._seq = self._count_existing()
 
     @property
@@ -78,24 +98,40 @@ class Session:
             return 0
         # Must agree with events(), which skips blank lines, or seq numbers
         # would collide after a reopen.
+        n = 0
+        last = b"\n"
         with self._events_path.open("rb") as f:
-            return sum(1 for line in f if line.strip())
+            for last in f:
+                if last.strip():
+                    n += 1
+        # A partial final line would swallow the next append; terminate it first.
+        self._unterminated = not last.endswith(b"\n")
+        return n
 
     # -- writing --------------------------------------------------------
 
     def write_meta(self, **meta) -> None:
-        self.meta_path.write_text(json.dumps(meta, indent=2))
+        _atomic_write_text(self.meta_path, json.dumps(meta, indent=2))
 
     def read_meta(self) -> dict:
-        if self.meta_path.exists():
-            return json.loads(self.meta_path.read_text())
-        return {}
+        """The session's metadata, or ``{}`` if the file is missing or damaged.
+
+        A single unreadable session must not break ``list`` or the viewer.
+        """
+        try:
+            meta = json.loads(self.meta_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return meta if isinstance(meta, dict) else {}
 
     def append(self, event: Event) -> Event:
         with self._lock:
             event.seq = self._seq
             self._seq += 1
             with self._events_path.open("a", encoding="utf-8") as f:
+                if self._unterminated:
+                    f.write("\n")
+                    self._unterminated = False
                 f.write(event.to_json() + "\n")
         return event
 
@@ -107,19 +143,31 @@ class Session:
         meta = self.read_meta()
         meta["ended"] = time.time()
         meta["exit_code"] = exit_code
-        self.meta_path.write_text(json.dumps(meta, indent=2))
+        self.write_meta(**meta)
         self.append(Event(Kind.SESSION_END, Source.CLI, {"exit_code": exit_code}))
 
     # -- reading --------------------------------------------------------
 
-    def events(self) -> Iterator[Event]:
+    def events(self, strict: bool = False) -> Iterator[Event]:
+        """Yield the recorded events in file order.
+
+        Lines that fail to parse (a crash mid-write, a foreign edit) are
+        skipped so the rest of the recording stays usable; pass ``strict=True``
+        to raise ``ValueError`` on the first bad line instead. Each event
+        carries its own ``seq``, so skipping never renumbers the survivors.
+        """
         if not self._events_path.exists():
             return
-        with self._events_path.open(encoding="utf-8") as f:
-            for line in f:
+        with self._events_path.open(encoding="utf-8", errors="replace") as f:
+            for lineno, line in enumerate(f, 1):
                 line = line.strip()
-                if line:
+                if not line:
+                    continue
+                try:
                     yield Event.from_json(line)
+                except (ValueError, TypeError) as exc:
+                    if strict:
+                        raise ValueError(f"{self._events_path}:{lineno}: {exc}") from exc
 
     def __len__(self) -> int:
         return self._seq
@@ -136,8 +184,10 @@ def create_session(root: Path = DEFAULT_ROOT) -> Session:
 
 
 def open_session(session_id: str, root: Path = DEFAULT_ROOT) -> Session:
+    if not is_valid_session_id(session_id):
+        raise FileNotFoundError(f"invalid session id {session_id[:80]!r}")
     d = sessions_dir(root) / session_id
-    if not d.exists():
+    if not d.is_dir():
         raise FileNotFoundError(f"no session {session_id!r} under {root}")
     return Session(d)
 

@@ -95,7 +95,11 @@ def make_server(root: Path = DEFAULT_ROOT, host: str = "127.0.0.1", port: int = 
         def do_GET(self):
             u = urlsplit(self.path)
             if u.path.startswith("/api/"):
-                status, ctype, body = api.handle(u.path, parse_qs(u.query))
+                try:
+                    status, ctype, body = api.handle(u.path, parse_qs(u.query))
+                except Exception as exc:  # noqa: BLE001 - a damaged session must answer, not hang
+                    status, ctype = 500, "application/json"
+                    body = json.dumps({"error": f"internal error: {exc!r}"}).encode()
             else:
                 rel = "index.html" if u.path in ("", "/") else u.path.lstrip("/")
                 f = (VIEWER_DIR / rel).resolve()

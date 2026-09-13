@@ -79,7 +79,8 @@ def _mentions(call_input: dict | None, needle: str) -> bool:
 
 def _fs_dict(e: Event) -> dict:
     snap = e.snapshots[0] if e.snapshots else None
-    return {"id": e.id, "ts": e.ts, "path": e.payload["path"], "op": e.payload["op"],
+    return {"id": e.id, "ts": e.ts, "path": e.payload.get("path") or "?",
+            "op": e.payload.get("op") or "modify",
             "size": e.payload.get("size"),
             "before": snap.before if snap else None, "after": snap.after if snap else None}
 
@@ -173,7 +174,7 @@ def build_steps(events: Iterable[Event]) -> list[Step]:
                 # while it runs are attributed to it (no-proxy recordings).
                 close_open()
                 open_step = Step(index=len(steps), kind="exec", ts=e.ts,
-                                 title=f"$ {d.get('command')}", event_ids=[e.id], execs=[d],
+                                 title=f"$ {d.get('command') or ''}", event_ids=[e.id], execs=[d],
                                  cumulative_tokens=total_tokens, duration=d.get("duration"))
                 open_step.confidence = "timing"
                 if d.get("duration") is not None:

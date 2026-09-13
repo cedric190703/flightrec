@@ -55,6 +55,10 @@ calls route through its proxy, watches the project directory, and shims the
 shell — then launches your command untouched. Recordings land in
 `~/.flightrec/sessions/<id>/`.
 
+Ctrl-C is forwarded to the agent. If it is still running half a second
+later, flightrec sends `SIGTERM`; a second Ctrl-C escalates to `SIGKILL`.
+Either way the session is closed with the exit code in `meta.json`.
+
 ### Inspect from the terminal
 
 ```bash
