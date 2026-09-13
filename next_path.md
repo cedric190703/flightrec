@@ -1,53 +1,109 @@
 # next_path — where flightrec goes from here
 
-M1–M6 (record, snapshot, proxy, correlate, view, fork) are done. This file is
-the ordered backlog of what comes next. Each item says *why* it matters, what
-it touches, and how we know it is done. Rough order is by value ÷ effort;
-items within a tier are independent and can be picked up in any order.
+M1–M6 (record, snapshot, proxy, correlate, view, fork) are done, and the
+recorder has since been hardened against damaged and untrusted input (see
+"Recently landed"). This file is the ordered backlog of what comes next.
+
+Every item states *why* it matters, what it **touches**, how it is **tested**,
+and when it is **done**. Rough order inside a tier is value ÷ effort; items
+within a tier are independent unless a "Needs" line says otherwise.
 
 Legend: `[S]` ≤ 1 day · `[M]` a few days · `[L]` a week or more.
 
 ---
 
-## Tier 1 — make recordings trustworthy and safe to share
+## Start here — the recommended next three
+
+1. **1.1 Secret redaction** — nothing recorded today is safe to share. Blocks
+   every export/diff/sharing feature below it.
+2. **1.2 Capture the full request** — the proxy currently records only
+   `model`, `stream`, `n_messages` and tool *names*. The system prompt,
+   sampling parameters and the request body itself are lost, which makes
+   replay (4.1), session diff (2.4) and "why did it say that" impossible.
+   Small change, unlocks a whole tier.
+3. **1.3 Capture command output** — `exec` events carry argv and exit code but
+   not stdout/stderr. "Which step broke the tests" still requires a guess.
+
+These three are all `[S]`, touch different files, and can ship in one week.
+
+---
+
+## Tier 1 — make recordings complete and safe to share
 
 ### 1.1 Secret redaction `[S]`
-The proxy records request headers and bodies; `x-api-key`, `Authorization`
-and bearer tokens in prompts land in `events.jsonl` in clear text. Nobody can
-share a recording until this is fixed.
-- `wire.py` / `proxy.py`: scrub known auth headers before `record()`; regex
-  pass over payload strings for `sk-…`, `ghp_…`, AWS keys, JWTs.
-- `flightrec run --redact PATTERN` for project-specific secrets.
-- Done when: a session recorded with a real key contains no key material
-  (`grep` test on the JSONL), and the viewer shows `«redacted»`.
+The proxy records request and response bodies; `x-api-key`, `Authorization`
+and bearer tokens in prompts land in `events.jsonl` in clear text.
+- **Touches:** new `redact.py` (pure functions), called from `proxy.record()`
+  *before* `extract()` so parsers never see key material; `fswatch` (skip
+  files matching `.env*`, `*.pem`, `id_rsa*` by default — configurable).
+- **Rules:** known auth headers → `«redacted»`; regex pass over every string
+  in payloads for `sk-…`, `sk-ant-…`, `ghp_…`, `AKIA…`, JWTs, `-----BEGIN …
+  PRIVATE KEY-----`; `flightrec run --redact PATTERN` (repeatable) for
+  project-specific secrets; `FLIGHTREC_NO_REDACT=1` escape hatch, loudly
+  warned.
+- **Tested:** unit tests per pattern; an end-to-end `run` with a fake key in
+  env and in the prompt, then `grep` over the whole session directory.
+- **Done when:** the grep finds nothing and the viewer shows `«redacted»`.
 
-### 1.2 Capture commands run by absolute path `[M]`
-`/bin/sh -c …` bypasses the `PATH` shim, so harnesses that spawn shells by
-absolute path (several do) leave holes in the exec stream.
-- Linux: `LD_PRELOAD` shim on `execve`; macOS: `DYLD_INSERT_LIBRARIES` where
-  SIP allows, otherwise fall back to `fs_usage`/`proc` polling.
-- Alternative cheap win: watch `/proc/<pid>/task/*/children` (Linux) and
-  `ps -o ppid` polling (macOS) for the harness's process tree and log argv.
-- Done when: `flightrec run -- bash -c '/bin/sh -c "echo hi"'` records the
-  inner command.
+### 1.2 Capture the full request `[S]`
+- **Touches:** `wire.py` (`extract()` adds `system`, `temperature`,
+  `max_tokens`, `tool_choice`, a `request_sha256` over the canonical body,
+  and — behind `--capture-bodies` — the clipped raw body), `cli.py` flag,
+  viewer request panel.
+- **Design:** `request_sha256` is computed over the body with volatile fields
+  (`stream`, `metadata.user_id`) removed, so identical turns hash the same
+  across runs. This is the key 4.1 replay and 2.4 diff will use.
+- **Tested:** fixture bodies for all three providers; hash stability across
+  key order and the `stream` flag.
+- **Done when:** `show` prints the system prompt (clipped) on `llm_request`
+  and two recordings of the same turn share a `request_sha256`.
+- **Needs:** 1.1 first, or the captured body reintroduces key material.
 
-### 1.3 Snapshot the *whole* tree at session start `[M]`
+### 1.3 Capture command output `[S]`
+- **Touches:** `shim.py` template (`tee` stdout/stderr to
+  `$FLIGHTREC_EXEC_LOG.d/<id>.out`/`.err` while still passing through — the
+  agent must see its output unchanged and unbuffered), `ExecCollector`
+  (attach a bounded tail, default 64 KiB, as a blob), `timeline`/viewer/`show
+  --steps` (render the tail under the command).
+- **Constraints:** interactive commands (TTY) must not be broken — only tee
+  when stdout is not a TTY; never buffer.
+- **Tested:** a shimmed `bash -c 'echo out; echo err >&2; exit 3'` yields an
+  exec end event with both tails and exit 3; a TTY check via `script -q`.
+- **Done when:** `show --steps` prints the failing pytest summary under the
+  `$ pytest` line.
+
+### 1.4 Snapshot the *whole* tree at session start `[M]`
 `fork` can only rebuild files flightrec saw change; an untouched file that the
 agent depends on is missing from the forked directory.
-- Option A: `git stash`-style — if the cwd is a git repo, record `HEAD` +
-  `git diff` at start, and let `fork` start from `git worktree add`.
-- Option B: content-address the full tree at start (bounded by size, respecting
-  ignores). Blobs dedupe, so repeated sessions on one repo are cheap.
-- Done when: `flightrec fork` produces a directory that passes the project's
-  test suite without manual copying.
+- **Touches:** `fswatch._seed_index` already hashes every file — the blobs are
+  in the store, only the *index* is not persisted. Write `tree.json`
+  (`{path: sha}`) at `session_start`; `fork.materialize` starts from it.
+- **Also:** if `cwd` is a git repo, record `HEAD` and `git status --porcelain`
+  in `meta.json` so a fork can alternatively begin from `git worktree add`.
+- **Tested:** fork a session recorded on a small repo with an untouched
+  module; the fork's test suite passes without manual copying.
+- **Done when:** that test is green.
 
-### 1.4 Session retention & garbage collection `[S]`
+### 1.5 Session retention and garbage collection `[S]`
 `~/.flightrec/sessions` grows without bound; blobs are per-session so nothing
-is shared.
-- `flightrec gc --keep-last N --older-than 30d`; `flightrec rm <id>`.
-- Move blobs to a root-level store (`~/.flightrec/blobs/`) with refcounts, or
-  hard-link across sessions.
-- Done when: `list` shows sizes and `gc` reclaims them.
+is shared (1.4 makes this worse: every session re-stores the whole tree).
+- **Touches:** `store.py` (root-level `blobs/` with per-session hard links,
+  or a refcount file), `cli.py` (`flightrec rm <id>`, `flightrec gc
+  --keep-last N --older-than 30d --dry-run`), `list` gains a SIZE column.
+- **Tested:** `gc` on a fixture home reclaims exactly the expected sessions
+  and never removes a blob still referenced.
+- **Done when:** `list` shows sizes and `gc --dry-run` matches what `gc` does.
+
+### 1.6 Capture commands run by absolute path `[M]`
+`/bin/sh -c …` bypasses the `PATH` shim, so harnesses that spawn shells by
+absolute path leave holes in the exec stream.
+- **Cheap win first:** poll the harness's process tree (`ps -o pid,ppid,args`
+  on macOS, `/proc/<pid>/task/*/children` on Linux) every 100 ms and log new
+  argv as `exec` events with `source: "ptrace"`-style confidence `timing`.
+- **Later:** `LD_PRELOAD` shim on `execve` (Linux); `DYLD_INSERT_LIBRARIES`
+  where SIP allows (macOS).
+- **Done when:** `flightrec run -- bash -c '/bin/sh -c "echo hi"'` records
+  the inner command.
 
 ---
 
@@ -56,66 +112,91 @@ is shared.
 ### 2.1 Live tailing in the viewer `[M]`
 Today you record, *then* view. Watching a session as it happens is the
 killer demo and the main debugging workflow.
-- `server.py`: SSE endpoint `/api/sessions/<id>/tail` that streams new events;
-  `Session` gets a `follow()` generator.
-- Viewer: auto-scroll timeline, "LIVE" badge, pause on scrub.
-- Done when: `flightrec run` + `flightrec view` in a second terminal shows
+- **Touches:** `store.Session.follow()` (generator over new lines; reuse the
+  partial-line logic from `ExecCollector.drain`), `server.py` SSE endpoint
+  `/api/sessions/<id>/tail?since=<seq>`, viewer: auto-scroll, "LIVE" badge,
+  pause on scrub, incremental `build_steps` (append-only recompute of the
+  last open step only).
+- **Tested:** append events to a session while an SSE client is connected;
+  assert delivery order and latency < 200 ms; disconnect mid-stream must not
+  leak a thread.
+- **Done when:** `flightrec run` + `flightrec view` in a second terminal shows
   steps appearing within ~200 ms.
 
 ### 2.2 Search, filter and jump `[S]`
-- Filter steps by kind / confidence / path / exit code ≠ 0 / `is_error`.
-- Full-text search across tool inputs, results and assistant text.
-- Keyboard: `/` to search, `n`/`p` next/prev match, `e` next error.
-- Done when: finding "the step that broke the tests" takes one keystroke.
+- Filter steps by kind / confidence / path / `exit_code ≠ 0` / `is_error`.
+- Full-text search across tool inputs, results, command output (1.3) and
+  assistant text; `flightrec show --grep PATTERN` for the terminal.
+- Keyboard: `/` search, `n`/`p` next/prev match, `e` next error, `f` next
+  file change.
+- **Done when:** finding "the step that broke the tests" takes one keystroke.
 
 ### 2.3 Cost and token accounting `[S]`
 `cumulative_tokens` exists; turn it into money and cache efficiency.
-- Per-model price table (overridable via `~/.flightrec/prices.json`).
-- Show `$` per step and per session; cache-read/cache-write ratio; a
-  sparkline of tokens over time.
-- `flightrec list` gains a COST column; `flightrec show --steps` prints `$`.
+- **Touches:** new `prices.py` with a per-model table (overridable via
+  `~/.flightrec/prices.json`), `timeline.Step.cost`, `list` COST column,
+  `show --steps` prints `$`, viewer shows `$`/step, cache-read ratio and a
+  token sparkline.
+- **Tested:** table lookup with model aliases and unknown models (cost
+  `None`, never a crash); cache tokens priced at their discounted rate.
+- **Done when:** `list` shows a session's total cost.
 
 ### 2.4 Session diff `[M]`
-Compare two recordings of the same task (e.g. two models, or before/after a
-prompt change): steps side by side, files touched in one but not the other,
-total tokens/cost/duration, first divergent step.
+Compare two recordings of the same task (two models, or before/after a prompt
+change): steps side by side, files touched in one but not the other, total
+tokens/cost/duration, first divergent step.
+- **Needs:** 1.2 (`request_sha256` is how "same turn" is defined).
 - `flightrec diff <a> <b>` (text) and `/diff/<a>/<b>` in the viewer.
 
 ### 2.5 Export `[S]`
 - `flightrec export <id> --format markdown|json|har|junit`.
 - Markdown is the shareable "what the agent did" report (superset of
-  `FORK.md`); HAR lets people open the LLM traffic in browser devtools.
+  `FORK.md`); HAR lets people open the LLM traffic in browser devtools; JUnit
+  turns exec failures into CI-readable results.
+- **Needs:** 1.1 — export is the moment a recording leaves the machine.
+
+### 2.6 Analysis: loops, waste and "where did it go wrong" `[M]`
+- Detect repeated identical tool calls, edit→test→revert cycles, responses
+  with zero side effects, and the first `is_error`/non-zero exit after which
+  the session never recovered.
+- Surface as `note` events (`source: "analysis"`) so the format is unchanged
+  and the viewer shows them inline as a heatmap strip on the scrubber.
 
 ---
 
 ## Tier 3 — cover every harness and provider
 
 ### 3.1 More wire formats `[S each]`
-`wire.py` parses Anthropic Messages and OpenAI Chat/Responses. Add:
-- Google Gemini (`generateContent` / `streamGenerateContent`)
-- AWS Bedrock (`invoke` / `converse`, event-stream framing)
-- Ollama / llama.cpp (`/api/chat`, NDJSON streaming)
-- Mistral, Cohere, xAI where they diverge from the OpenAI shape.
-Each needs: a `detect_provider` rule, a parser, and a fixture-based test in
-`tests/test_wire_*.py`. Route via `/to/<host>` already works for capture.
+`wire.py` parses Anthropic Messages and OpenAI Chat/Responses. Add, in this
+order: Google Gemini (`generateContent` / `streamGenerateContent`), Ollama /
+llama.cpp (`/api/chat`, NDJSON streaming), AWS Bedrock (`converse`,
+event-stream framing), then Mistral/Cohere/xAI where they diverge from the
+OpenAI shape. Each needs a `detect_provider` rule, a parser, and a
+fixture-based test in `tests/test_wire_*.py`. Route via `/to/<host>` already
+captures the raw traffic for all of them.
 
-### 3.2 Native adapters `[M each]`
+### 3.2 `flightrec doctor` `[S]`
+Before native adapters: tell the user *why* a recording is empty.
+- Checks: which `*_BASE_URL` vars the harness honours (a probe request
+  through the proxy), whether the shell resolves to the shim dir, whether the
+  watcher backend is native or polling, whether the cwd is under an ignore.
+- **Done when:** running `doctor` on a harness that pins TLS says so.
+
+### 3.3 Native adapters `[M each]`
 The proxy/fs/shim trio is the universal floor; native hooks add fidelity
 (exact tool names, user prompts, subagent boundaries) when available.
-- Claude Code: hooks (`PreToolUse`/`PostToolUse`/`Stop`) → `Source
+- Claude Code: hooks (`PreToolUse`/`PostToolUse`/`Stop`) → `source:
   "adapter:claude"` events, correlated with the proxy stream by `tool_use_id`.
-- Aider: parse `.aider.chat.history.md`.
-- Codex / OpenCode: their session JSONL.
-- Done when: a native-adapted session shows `strong` confidence on every
-  tool step and user messages arrive even when the proxy is off.
+- Aider: parse `.aider.chat.history.md`. Codex / OpenCode: session JSONL.
+- **Done when:** a native-adapted session shows `strong` confidence on every
+  tool step and user messages arrive even with `--no-proxy`.
 
-### 3.3 Harnesses that pin TLS or ignore `*_BASE_URL` `[L]`
+### 3.4 Harnesses that pin TLS or ignore `*_BASE_URL` `[L]`
 - Optional MITM mode with a locally generated CA (`flightrec ca install`),
-  `HTTPS_PROXY` injection, explicit opt-in and loud warning.
-- Document per-harness env vars that route traffic (`CLAUDE_CODE_…`,
-  `OPENAI_BASE_URL`, `GEMINI_API_BASE`, …) in a `harnesses.md` matrix.
+  `HTTPS_PROXY` injection, explicit opt-in and a loud warning.
+- Document per-harness routing env vars in `docs/harnesses.md`.
 
-### 3.4 Windows support `[M]`
+### 3.5 Windows support `[M]`
 Shims are POSIX `sh`; generate `.cmd` wrappers and use `where` for
 resolution. `fswatch` and the proxy already work. CI matrix gains
 `windows-latest`.
@@ -126,40 +207,57 @@ resolution. `fswatch` and the proxy already work. CI matrix gains
 
 ### 4.1 Deterministic replay `[L]`
 Re-run a harness against the *recorded* LLM responses instead of the live
-API: the proxy answers from `events.jsonl` keyed by request hash.
-- `flightrec replay <id> -- <cmd>`; mismatched requests fall through to the
-  real API (and are recorded as a divergence).
+API: the proxy answers from `events.jsonl` keyed by `request_sha256`.
+- **Needs:** 1.2 (bodies + hash). Streamed responses are re-emitted as SSE
+  with the original chunking so client code paths stay identical.
+- `flightrec replay <id> -- <cmd>`; a request with no recorded match falls
+  through to the real API and is recorded as a `divergence` note.
 - Turns any recording into a fixture: agent behaviour can be tested in CI
   without spending tokens.
 
 ### 4.2 Assertions on recordings `[M]`
-`flightrec check <id> --no-exec-failures --max-cost 2.00 --touched-only src/`
-returns non-zero on violation. Pairs with replay to make agent changes
-gate-able in CI.
+`flightrec check <id> --no-exec-failures --max-cost 2.00 --touched-only src/
+--no-secrets` returns non-zero on violation. Pairs with replay to gate agent
+changes in CI.
 
 ### 4.3 Annotations `[S]`
 `flightrec note <id> --at <seq> "this is where it went wrong"` and inline
-notes in the viewer (stored as `note` events, so the format doesn't change).
+notes in the viewer, stored as `note` events (format unchanged).
 
 ---
 
 ## Tier 5 — engineering hygiene
 
-- **Packaging**: publish to PyPI; `pipx install flightrec`; `uv tool`.
-  Homebrew formula once the CLI surface is stable.
-- **Schema versioning**: `meta.json` gets `"format": 1`; `Event.from_json`
+- **Schema versioning** `[S]`: `meta.json` gets `"format": 1` and
+  `Session.open` refuses newer formats with a clear message; `from_json`
   already tolerates unknown fields — add a migration hook for breaking
-  changes.
-- **Type-checking & linting in CI**: `ruff` + `mypy --strict` on `src/`.
-- **Property tests** for `build_steps` (Hypothesis: any event permutation
-  yields monotonically indexed steps, every event id in at most one step).
-- **Large-session performance**: `session_detail` serialises every event;
-  paginate `/api/sessions/<id>/events` and stream `build_steps` for
-  >50k-event sessions.
-- **Viewer as a real package**: split `index.html` into modules with a tiny
-  build step (esbuild), keep "single file, no runtime deps" as the artefact.
+  changes. Do this *before* 1.2 adds new payload fields.
+- **Lint and types in CI** `[S]`: `ruff` + `mypy --strict` on `src/`;
+  `Kind`/`Source` should be the annotated types on `Event`, not `str`.
+- **Property tests** `[S]`: Hypothesis over `build_steps` — any permutation
+  of a valid event list yields monotonically indexed steps, every event id
+  appears in at most one step, `cumulative_tokens` is non-decreasing; and
+  over `Event.from_json(to_json())` round-trips.
+- **Large-session performance** `[M]`: `session_detail` serialises every
+  event; paginate `/api/sessions/<id>/events`, cache `build_steps` keyed by
+  `(mtime, size)` of `events.jsonl`, and measure with a 100k-event fixture.
+- **Packaging** `[S]`: publish to PyPI; `pipx install flightrec`; `uv tool`.
+  Homebrew formula once the CLI surface is stable.
+- **Viewer as a real package** `[M]`: split `index.html` into modules with a
+  tiny build step (esbuild), keep "single file, no runtime deps" as the
+  artefact.
 
 ---
+
+## Recently landed
+
+- Hardening pass (2026-09-14): session ids and blob hashes validated before
+  path joins (closed an arbitrary-file read in the viewer's diff endpoint);
+  `fork` refuses paths escaping the destination; atomic `meta.json`; readers
+  skip malformed event lines and repair a crash-truncated last line; watcher
+  and exec-collector threads survive per-item errors; `.git` no longer walked
+  at seed; proxy/server answer 400/500 JSON instead of tracebacks; Ctrl-C
+  escalates SIGTERM → SIGKILL.
 
 ## Explicitly not planned
 

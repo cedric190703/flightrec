@@ -11,16 +11,17 @@ Milestones, in the order they were built. Everything through M6 is done.
 
 ## Next
 
-- [ ] **Native adapters** that enrich the recording when a harness offers
-      more than the wire shows (Claude Code hooks, Aider chat history,
-      Codex session files). The recorder already works without them; an
-      adapter just adds exact ids and the human-typed prompt.
-- [ ] **Analysis layer**: detect loops (same tool call repeated), wasted
-      turns, cost-per-outcome; a "where did it go wrong" heatmap.
-- [ ] **Align the event schema** with OpenTelemetry GenAI semantic
-      conventions so traces interoperate with other tooling.
-- [ ] **Gemini / Vertex** wire parser via the `/to/<host>` route.
-- [ ] True resume for harnesses that support it (`claude --resume`, etc.).
+The ordered backlog lives in [`next_path.md`](../next_path.md) at the repo
+root, with a "start here" list of the three recommended next items (secret
+redaction, full request capture, command output capture). This page only
+tracks milestones.
+
+- [ ] **M7 — Complete & safe**: redaction, full request bodies, command
+      output, whole-tree snapshot (next_path Tier 1).
+- [ ] **M8 — Live**: tailing viewer, search, cost, export (Tier 2).
+- [ ] **M9 — Everywhere**: more wire formats, `doctor`, native adapters,
+      Windows (Tier 3).
+- [ ] **M10 — Replay**: deterministic replay and CI assertions (Tier 4).
 
 ## Evaluation ideas (for the report)
 
