@@ -97,6 +97,21 @@ Reconstructs the exact file contents as of that step and writes a `FORK.md`
 summary of the request and steps so far — paste it into any agent to
 continue from that point without redoing the earlier work.
 
+## Secrets
+
+Recordings are meant to be shared, so credentials are stripped before
+anything is written to disk. The proxy scrubs request and response bodies
+*before* they are parsed, so no event can carry a key: auth headers, `sk-…`
+/ `sk-ant-…` keys, GitHub/Slack/Google tokens, AWS access keys, JWTs, bearer
+tokens and PEM private-key blocks are replaced with `«redacted»`. The
+watcher also skips credential files by default (`.env*`, `*.pem`, `*.key`,
+`id_rsa*`, `.npmrc`, `.netrc`, …), so they are never snapshotted.
+
+```bash
+flightrec run --redact 'CORP-[0-9]+' -- claude   # redact a project-specific secret
+FLIGHTREC_NO_REDACT=1 flightrec run -- claude     # escape hatch (loudly warned)
+```
+
 ## Supported providers
 
 Anthropic Messages, OpenAI Chat Completions and OpenAI Responses are parsed

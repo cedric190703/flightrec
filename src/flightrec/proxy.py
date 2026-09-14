@@ -28,6 +28,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
 from .events import Event, Kind, Source
+from .redact import Redactor
 from .store import Session
 from .wire import Dedup, detect_provider, extract
 
@@ -49,8 +50,10 @@ def _split_base(url: str) -> tuple[str, str]:
 
 class LlmProxy:
     def __init__(self, session: Session, upstreams: dict[str, str] | None = None,
-                 host: str = "127.0.0.1", port: int = 0):
+                 host: str = "127.0.0.1", port: int = 0,
+                 redactor: Redactor | None = None):
         self.session = session
+        self.redactor = redactor if redactor is not None else Redactor.from_env()
         self.upstreams = dict(DEFAULT_UPSTREAMS)
         # Honour a pre-existing override (e.g. a corporate gateway) as the upstream.
         for name, var in (("anthropic", "ANTHROPIC_BASE_URL"), ("openai", "OPENAI_BASE_URL")):
@@ -126,9 +129,12 @@ class LlmProxy:
         provider = detect_provider(path, headers)
         ctype = resp_headers.get("content-type", "")
         streamed = "text/event-stream" in ctype
+        # Scrub credentials before the parsers run, so no event can ever carry
+        # a key even if a body embeds one in an unexpected place.
+        req_text = self.redactor.text(req_body.decode("utf-8", "replace"))
+        resp_text = self.redactor.text(resp_body.decode("utf-8", "replace"))
         try:
-            events = extract(provider, path, req_body.decode("utf-8", "replace"),
-                             resp_body.decode("utf-8", "replace"), status, streamed,
+            events = extract(provider, path, req_text, resp_text, status, streamed,
                              self.dedup, ts_req, ts_resp)
         except Exception as exc:  # noqa: BLE001 - never break the harness
             events = [Event(Kind.NOTE, Source.PROXY,

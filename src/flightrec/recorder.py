@@ -11,6 +11,7 @@ from pathlib import Path
 from .events import Event, Kind, Source
 from .fswatch import FsWatcher
 from .proxy import LlmProxy
+from .redact import Redactor
 from .shim import ExecCollector, ShimDir
 from .store import Session, create_session
 
@@ -18,7 +19,7 @@ from .store import Session, create_session
 class Recorder:
     def __init__(self, command: list[str], cwd: Path, root: Path | None = None,
                  ignores: list[str] | None = None, harness: str | None = None,
-                 proxy: bool = True):
+                 proxy: bool = True, redact: list[str] | None = None):
         self.command = command
         self.cwd = cwd.resolve()
         self.session: Session = create_session(root) if root else create_session()
@@ -26,8 +27,13 @@ class Recorder:
         self._fs = FsWatcher(self.cwd, self.session, ignores)
         self._shim = ShimDir(self.session)
         self._exec = ExecCollector(self.session, self._shim.log_path)
-        self._proxy = LlmProxy(self.session) if proxy else None
+        self._redactor = Redactor.from_env(redact)
+        self._proxy = LlmProxy(self.session, redactor=self._redactor) if proxy else None
         self._proc: subprocess.Popen | None = None
+
+    @property
+    def redaction_enabled(self) -> bool:
+        return self._redactor.enabled
 
     def _env(self) -> dict[str, str]:
         env = self._shim.env()

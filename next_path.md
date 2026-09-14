@@ -12,38 +12,22 @@ Legend: `[S]` ≤ 1 day · `[M]` a few days · `[L]` a week or more.
 
 ---
 
-## Start here — the recommended next three
+## Start here — the recommended next two
 
-1. **1.1 Secret redaction** — nothing recorded today is safe to share. Blocks
-   every export/diff/sharing feature below it.
-2. **1.2 Capture the full request** — the proxy currently records only
+1. **1.2 Capture the full request** — the proxy currently records only
    `model`, `stream`, `n_messages` and tool *names*. The system prompt,
    sampling parameters and the request body itself are lost, which makes
    replay (4.1), session diff (2.4) and "why did it say that" impossible.
-   Small change, unlocks a whole tier.
-3. **1.3 Capture command output** — `exec` events carry argv and exit code but
+   Small change, unlocks a whole tier. (Now safe to do: 1.1 redaction has
+   landed, so a captured body no longer reintroduces key material.)
+2. **1.3 Capture command output** — `exec` events carry argv and exit code but
    not stdout/stderr. "Which step broke the tests" still requires a guess.
 
-These three are all `[S]`, touch different files, and can ship in one week.
+Both are `[S]`, touch different files, and can ship together.
 
 ---
 
 ## Tier 1 — make recordings complete and safe to share
-
-### 1.1 Secret redaction `[S]`
-The proxy records request and response bodies; `x-api-key`, `Authorization`
-and bearer tokens in prompts land in `events.jsonl` in clear text.
-- **Touches:** new `redact.py` (pure functions), called from `proxy.record()`
-  *before* `extract()` so parsers never see key material; `fswatch` (skip
-  files matching `.env*`, `*.pem`, `id_rsa*` by default — configurable).
-- **Rules:** known auth headers → `«redacted»`; regex pass over every string
-  in payloads for `sk-…`, `sk-ant-…`, `ghp_…`, `AKIA…`, JWTs, `-----BEGIN …
-  PRIVATE KEY-----`; `flightrec run --redact PATTERN` (repeatable) for
-  project-specific secrets; `FLIGHTREC_NO_REDACT=1` escape hatch, loudly
-  warned.
-- **Tested:** unit tests per pattern; an end-to-end `run` with a fake key in
-  env and in the prompt, then `grep` over the whole session directory.
-- **Done when:** the grep finds nothing and the viewer shows `«redacted»`.
 
 ### 1.2 Capture the full request `[S]`
 - **Touches:** `wire.py` (`extract()` adds `system`, `temperature`,
@@ -251,6 +235,15 @@ notes in the viewer, stored as `note` events (format unchanged).
 
 ## Recently landed
 
+- Secret redaction (1.1): new `redact.py` scrubs auth headers, `sk-…`/`sk-ant-…`
+  keys, GitHub/Slack/Google tokens, AWS keys, JWTs, bearer tokens and PEM
+  private-key blocks from request/response bodies *before* `extract()` parses
+  them, so no event can carry a key. `flightrec run --redact PATTERN`
+  (repeatable regex/literal) adds project secrets; `FLIGHTREC_NO_REDACT=1` is
+  a loudly-warned escape hatch. The watcher now ignores `.env*`, `*.pem`,
+  `*.key`, `id_rsa*`, `.npmrc`, `.netrc` and similar credential files by
+  default. Covered by `test_redact*.py` (per-pattern units plus an end-to-end
+  proxy grep). 1.2 was gated on this and is now unblocked.
 - Hardening pass (2026-09-14): session ids and blob hashes validated before
   path joins (closed an arbitrary-file read in the viewer's diff endpoint);
   `fork` refuses paths escaping the destination; atomic `meta.json`; readers

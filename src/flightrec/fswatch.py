@@ -35,6 +35,11 @@ DEFAULT_IGNORES = [
     ".DS_Store", "*.swp", "*.tmp", "*~",
     ".pytest_cache", "*/.pytest_cache/*",
     "dist", "build", "*.egg-info",
+    # Credentials: never snapshot these into the blob store. Override with an
+    # explicit --ignore only-list is not possible, but they can be recovered
+    # from the user's own filesystem; a recording must stay safe to share.
+    ".env", ".env.*", "*.pem", "*.key", "id_rsa*", "id_ed25519*", "*.p12", "*.pfx",
+    ".npmrc", ".netrc", ".pypirc",
 ]
 
 # Editors and harnesses often write a file several times within a few ms

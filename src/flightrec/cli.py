@@ -1,6 +1,6 @@
 """flightrec command line.
 
-    flightrec run [--cwd DIR] [--ignore PATTERN]... -- <harness command...>
+    flightrec run [--cwd DIR] [--ignore PATTERN]... [--redact PATTERN]... -- <harness command...>
     flightrec list
     flightrec show <session-id> [--kind KIND]
 """
@@ -36,8 +36,12 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"flightrec run: --cwd {args.cwd!r} is not a directory", file=sys.stderr)
         return 2
     rec = Recorder(args.command, Path(args.cwd), root=Path(args.home),
-                   ignores=args.ignore, harness=args.harness, proxy=not args.no_proxy)
+                   ignores=args.ignore, harness=args.harness, proxy=not args.no_proxy,
+                   redact=args.redact)
     print(f"[flightrec] recording session {rec.session.id} -> {rec.session.dir}", file=sys.stderr)
+    if not rec.redaction_enabled:
+        print("[flightrec] WARNING: secret redaction is OFF (FLIGHTREC_NO_REDACT); "
+              "API keys and tokens will be stored in clear text.", file=sys.stderr)
     rc = rec.run()
     n = len(rec.session)
     print(f"[flightrec] session {rec.session.id} ended (exit {rc}, {n} events)", file=sys.stderr)
@@ -175,6 +179,10 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--harness", help="label for this harness (default: command name)")
     run.add_argument("--no-proxy", action="store_true",
                      help="do not intercept LLM API traffic (fs + exec only)")
+    run.add_argument("--redact", action="append", default=[], metavar="PATTERN",
+                     help="extra secret to redact from recorded bodies (regex or "
+                          "literal; repeatable). Built-in keys/tokens are always redacted "
+                          "unless FLIGHTREC_NO_REDACT=1.")
     run.add_argument("command", nargs=argparse.REMAINDER,
                      help="harness command, after '--'")
     run.set_defaults(fn=cmd_run)
