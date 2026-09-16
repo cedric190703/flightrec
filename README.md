@@ -67,6 +67,10 @@ flightrec show <id>                    # raw events
 flightrec show --steps <id>            # correlated steps (recommended)
 ```
 
+Damaged event lines are skipped when reading a recording. Reopening an edited
+log preserves existing event numbers and appends after the highest recorded
+number, so gaps or reordered lines cannot cause new events to reuse a number.
+
 ```
   2 16:46:43 TOOL  Read
   3 16:46:45 TOOL  Edit [strong]          tok=2750

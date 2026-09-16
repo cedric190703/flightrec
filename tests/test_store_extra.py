@@ -1,6 +1,7 @@
 """Store: seq continuity across reopen, blank lines, listing, blobs."""
 
 from pathlib import Path
+import json
 
 import pytest
 
@@ -28,6 +29,34 @@ def test_blank_lines_do_not_desync_seq(tmp_path: Path):
     assert len(again) == 1
     assert again.append(Event(Kind.NOTE, Source.CLI)).seq == 1
     assert [e.seq for e in again.events()] == [0, 1]
+
+
+@pytest.mark.parametrize("sequences", [[0, 2], [12, 3], [9, 9]])
+def test_reopen_continues_after_highest_recorded_seq(tmp_path: Path, sequences):
+    s = create_session(tmp_path)
+    log = s.dir / "events.jsonl"
+    log.write_text("\n".join(
+        Event(Kind.NOTE, Source.CLI, seq=seq).to_json() for seq in sequences
+    ), encoding="utf-8")  # also exercise repair of a missing final newline
+
+    again = open_session(s.id, tmp_path)
+    appended = again.append(Event(Kind.NOTE, Source.CLI))
+    assert appended.seq == max(sequences) + 1
+    assert [e.seq for e in again.events()] == sequences + [appended.seq]
+    reopened = open_session(s.id, tmp_path)
+    assert reopened.append(Event(Kind.NOTE, Source.CLI)).seq == appended.seq + 1
+
+
+@pytest.mark.parametrize("invalid_seq", [None, True, -1, 1.5, "100", [], {}])
+def test_reopen_ignores_invalid_seq_and_counts_damaged_lines(tmp_path: Path, invalid_seq):
+    s = create_session(tmp_path)
+    (s.dir / "events.jsonl").write_text(
+        Event(Kind.NOTE, Source.CLI, seq=0).to_json() + "\n\n"
+        + json.dumps({"kind": "note", "source": "cli", "seq": invalid_seq})
+        + '\n{"truncated":\n\xff\n[]\n', encoding="utf-8",
+    )
+    again = open_session(s.id, tmp_path)
+    assert again.append(Event(Kind.NOTE, Source.CLI)).seq == 5
 
 
 def test_events_on_fresh_session_is_empty(tmp_path: Path):

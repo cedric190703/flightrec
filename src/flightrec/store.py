@@ -96,17 +96,27 @@ class Session:
     def _count_existing(self) -> int:
         if not self._events_path.exists():
             return 0
-        # Must agree with events(), which skips blank lines, or seq numbers
-        # would collide after a reopen.
+        # Keep a slot for every nonblank line, including damaged records, but
+        # also honor stored sequences: edited logs can have gaps or be reordered.
         n = 0
+        next_seq = 0
         last = b"\n"
         with self._events_path.open("rb") as f:
             for last in f:
-                if last.strip():
-                    n += 1
+                if not last.strip():
+                    continue
+                n += 1
+                try:
+                    record = json.loads(last.decode("utf-8", errors="replace"))
+                except ValueError:
+                    continue
+                seq = record.get("seq") if isinstance(record, dict) else None
+                # bool is an int subclass, but is not an event sequence.
+                if type(seq) is int and seq >= 0:
+                    next_seq = max(next_seq, seq + 1)
         # A partial final line would swallow the next append; terminate it first.
         self._unterminated = not last.endswith(b"\n")
-        return n
+        return max(n, next_seq)
 
     # -- writing --------------------------------------------------------
 

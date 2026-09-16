@@ -50,3 +50,17 @@ A session always starts with `session_start` and is finalized with
 
 In each case, inspect `flightrec show <session-id>` for a `note` explaining
 the failure. Partial observer startup is cleaned up before the session closes.
+
+## Event log recovery
+
+The session store skips malformed JSONL records by default; use
+`session.events(strict=True)` to report the first malformed record with its
+line number. Existing event sequences are never renumbered. When reopening a
+log, the next sequence is the greater of the nonblank line count and one past
+the highest stored nonnegative integer sequence. This prevents collisions
+after lines are removed or reordered, while retaining sequence slots for
+damaged records. Invalid sequence values do not influence that maximum.
+A missing final newline is repaired before appending the next event.
+
+Recovery does not repair preexisting duplicate sequences, and concurrent
+writers through separate `Session` instances are not supported.
